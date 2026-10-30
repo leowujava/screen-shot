@@ -47,6 +47,29 @@ python app.py
 
 默认：桌面 `截图_YYYYMMDD_HHMMSS.png`
 
+## 自动发布（GitHub Actions）
+
+工作流：`.github/workflows/build-release.yml`（Windows runner，Python 3.14 + PyInstaller）。
+
+| 触发 | 结果 |
+|---|---|
+| 推送到 `master` / `main` | 跑测试 → 打包 → 更新滚动预发布 `latest` |
+| 推送 `v*` 标签（如 `v1.0.0`） | 跑测试 → 打包 → 发布正式 Release（自动生成 release notes） |
+| 手动触发（Actions → Build & Release → Run workflow） | 同分支推送，更新 `latest` |
+
+每次构建都会生成两个附件：`screen-shot.exe` 与 `screen-shot.exe.sha256`，Actions 页面同时保留 30 天的构建产物。
+
+发布正式版本：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+前提：仓库 `Settings → Actions → General → Workflow permissions` 需选择 **Read and write permissions**，否则工作流无法创建 Release。
+
+下载地址：`https://github.com/<owner>/<repo>/releases/tag/latest`（滚动预发布）或 `<tag>` 对应的正式版本。
+
 ## 打包为可执行文件
 
 使用 PyInstaller 打成单文件、无控制台的 Windows 可执行文件：
@@ -65,4 +88,4 @@ pyinstaller --onefile --windowed --name screen-shot ^
   app.py
 ```
 
-生成产物：`dist\screen-shot.exe`（约 30 MB，可直接双击运行，无需安装 Python）。
+生成产物：`dist\screen-shot.exe`（约 120 MB，含 OCR 模型与 onnxruntime，可直接双击运行，无需安装 Python）。

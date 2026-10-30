@@ -1,0 +1,6 @@
+mss
+Pillow
+pynput
+pystray
+pywin32
+rapidocr

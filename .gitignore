@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+
+# 构建产物
+build/
+dist/
+out/
+
+# IDE
+.idea/
+
+# 测试缓存与临时文件
+.pytest_cache/
+_tb_check.png

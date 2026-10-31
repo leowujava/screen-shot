@@ -433,7 +433,7 @@ class RegionSelector:
             self._drag_op = ("move", "move")
             self._drag_start = (event.x, event.y)
             self._drag_region = self._region
-            self.canvas.configure(cursor="size_all")
+            self.canvas.configure(cursor="sizing")
             return
 
     def _on_drag(self, event):

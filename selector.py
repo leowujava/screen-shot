@@ -65,11 +65,16 @@ class RegionSelector:
             self.root.title("")
         self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.attributes("-fullscreen", True)
-        self.root.attributes("-alpha", 1.0)
         self.root.configure(bg="black")
         # 置顶 + 无边框
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
+        # 在 overrideredirect 之后再设 -alpha：
+        # -alpha 会给窗口加 WS_EX_LAYERED，而 overrideredirect 触发的
+        # SetWindowPos 若不带 SWP_NOOWNERZORDER 会重新分配窗口父级，
+        # 导致覆盖层不再是顶层全屏窗口、鼠标事件丢失。
+        # 之后重设 -alpha 可确保扩展样式最终正确。
+        self.root.attributes("-alpha", 1.0)
 
         # 画布：铺满整个覆盖层，底色为黑色（配合 alpha 遮罩实现暗化）
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,

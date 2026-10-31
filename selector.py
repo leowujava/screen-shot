@@ -408,7 +408,15 @@ class RegionSelector:
 
     def _on_press(self, event):
         if self._mode == "select":
+            # 按下立刻创建最小框并进入调整模式（仿飞书：按下就有框）
             self.start = (event.x, event.y)
+            self._mode = "adjust"
+            # 创建 1x1 的最小框（以按下点为左上角）
+            x, y = event.x, event.y
+            x = max(0, min(x, self.width - 1))
+            y = max(0, min(y, self.height - 1))
+            self._region = (x, y, x + 1, y + 1)
+            self._render_all()
             return
         if self._region is None:
             return
@@ -429,53 +437,52 @@ class RegionSelector:
             return
 
     def _on_drag(self, event):
-        if self._mode == "select":
-            if not getattr(self, "start", None):
+        if self._mode == "adjust" and self._drag_op is None and getattr(self, "start", None):
+            # 从 select 阶段进入 adjust 后的第一次拖动：更新框的大小
+            # 框的左上角固定在 start，右下角跟手
+            sx, sy = self.start
+            x1, y1 = min(sx, event.x), min(sy, event.y)
+            x2, y2 = max(sx, event.x), max(sy, event.y)
+            w = x2 - x1
+            h = y2 - y1
+            # 如果拖得太小（< 5px），保持最小框
+            if w < self.MIN_SIZE and h < self.MIN_SIZE:
+                # 不更新，保持当前最小框
                 return
-            # 第一次拖动就切换到调整模式
-            self._mode = "adjust"
-            r = self._calc_region(self.start[0], self.start[1], event.x, event.y)
-            if r:
-                self._region = self._normalize((r[0], r[1], r[0] + r[2], r[1] + r[3]))
-            else:
-                self._region = None
+            self._region = self._normalize((x1, y1, x2, y2))
             # 显示十字准星
             if self._region:
-                l, t, rr, b = self._region
-                w = rr - l
-                h = b - t
-                self._show_crosshair(event.x, event.y, w, h)
+                l, t, r, b = self._region
+                self._show_crosshair(event.x, event.y, r - l, b - t)
             self._render_all()
             return
-        if self._drag_op is None or self._drag_start is None:
+        if self._mode == "adjust" and self._drag_op is not None and self._drag_start is not None:
+            op, kind = self._drag_op
+            dx = event.x - self._drag_start[0]
+            dy = event.y - self._drag_start[1]
+            l, t, r, b = self._drag_region
+            if kind == "move":
+                l, t, r, b = l + dx, t + dy, r + dx, b + dy
+            else:
+                if op in ("w", "sw", "nw"):
+                    l = l + dx
+                if op in ("e", "ne", "se"):
+                    r = r + dx
+                if op in ("n", "nw", "ne"):
+                    t = t + dy
+                if op in ("s", "sw", "se"):
+                    b = b + dy
+            self._region = self._normalize((l, t, r, b))
+            self._hide_crosshair()
+            self._render_all()
             return
-        op, kind = self._drag_op
-        dx = event.x - self._drag_start[0]
-        dy = event.y - self._drag_start[1]
-        l, t, r, b = self._drag_region
-        if kind == "move":
-            l, t, r, b = l + dx, t + dy, r + dx, b + dy
-        else:
-            if op in ("w", "sw", "nw"):
-                l = l + dx
-            if op in ("e", "ne", "se"):
-                r = r + dx
-            if op in ("n", "nw", "ne"):
-                t = t + dy
-            if op in ("s", "sw", "se"):
-                b = b + dy
-        self._region = self._normalize((l, t, r, b))
-        # 调整模式下隐藏十字准星
-        self._hide_crosshair()
-        self._render_all()
+        # select 模式下不应该有 drag（已经在 press 时切到 adjust 了）
+        if self._mode == "select":
+            return
 
     def _on_release(self, event):
-        if self._mode == "select":
-            # 点击太小：不进入调整，直接忽略
-            self.start = None
-            self._drag_op = None
-            self._hide_crosshair()
-            return
+        # 清理拖动状态
+        self.start = None
         self._drag_op = None
         self._drag_start = None
         self._drag_region = None

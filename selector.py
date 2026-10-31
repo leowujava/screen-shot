@@ -16,6 +16,10 @@ TB_FONT = ("Microsoft YaHei UI", 9)
 LABEL_BG = "#2b2f36"
 LABEL_FG = "#f5f6f8"
 
+# 十字准星颜色
+CROSSHAIR_COLOR = "red"
+CROSSHAIR_WIDTH = 1
+
 
 class RegionSelector:
     """全屏透明覆盖层，仿飞书截图交互：拖拽框选 → 出现 8 个调整手柄 →
@@ -29,8 +33,8 @@ class RegionSelector:
     """
 
     MIN_SIZE = 5
-    HANDLE_SIZE = 8   # 手柄边长（像素）
-    MARGIN = 4        # 手柄超出选区边缘的距离
+    HANDLE_SIZE = 12  # 手柄边长（像素）—— 加大到 12，更易抓
+    MARGIN = 8        # 手柄超出选区边缘的距离 —— 加大到 8，热区更大
 
     # 8 个手柄的标识
     HANDLES = ("nw", "n", "ne", "e", "se", "s", "sw", "w")
@@ -55,6 +59,10 @@ class RegionSelector:
         self._drag_op = None
         self._drag_start = None
         self._drag_region = None
+        self._crosshair_h = None  # 十字准星水平线
+        self._crosshair_v = None  # 十字准星垂直线
+        self._crosshair_label = None  # 十字准星尺寸标签
+        self._crosshair_label_bg = None
 
         if self._owns_root:
             self.root = tk.Tk()
@@ -69,11 +77,6 @@ class RegionSelector:
         # 置顶 + 无边框
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
-        # 在 overrideredirect 之后再设 -alpha：
-        # -alpha 会给窗口加 WS_EX_LAYERED，而 overrideredirect 触发的
-        # SetWindowPos 若不带 SWP_NOOWNERZORDER 会重新分配窗口父级，
-        # 导致覆盖层不再是顶层全屏窗口、鼠标事件丢失。
-        # 之后重设 -alpha 可确保扩展样式最终正确。
         self.root.attributes("-alpha", 1.0)
 
         # 画布：铺满整个覆盖层，底色为黑色（配合 alpha 遮罩实现暗化）
@@ -106,10 +109,7 @@ class RegionSelector:
     # ------------------------------------------------------------------ #
 
     def _init_background(self):
-        """后台抓取全屏截图并铺到画布。
-
-        抓图放到工作线程，完成后调度回主线程渲染，避免大窗口卡顿。
-        """
+        """后台抓取全屏截图并铺到画布。"""
         import threading
 
         def work():
@@ -168,16 +168,11 @@ class RegionSelector:
     _tb_visible = False
 
     def _tb_show(self, pos, size):
-        """在选区上方/下方显示工具条，pos/size 为画布坐标的选区矩形。
-
-        只在工具条不可见时 deiconify 一次，后续只移动位置 + 更新文字，
-        避免每次拖动都 deiconify/update_idletasks 导致卡死。
-        """
+        """在选区下方显示工具条，pos/size 为画布坐标的选区矩形。"""
         if not self.tb_win.winfo_exists():
             return
         x, y = pos[0], pos[1]
         w, h = size[2], size[3]
-        # 只在首次显示时 deiconify + 测量
         if not self._tb_visible:
             self.tb_win.deiconify()
             self.tb_win.update_idletasks()
@@ -185,12 +180,12 @@ class RegionSelector:
         self.tb_label.configure(text=f"{w} x {h}")
         tb_w = self.tb_win.winfo_width()
         tb_h = self.tb_win.winfo_height()
-        # 默认放选区上方；放不下时放下方；左右贴边
-        ty = y - tb_h - 4
+        # 默认放选区下方；放不下时放上方
+        ty = y + h + 4
+        if ty + tb_h > self.height:
+            ty = y - tb_h - 4
         if ty < 0:
             ty = y + h + 4
-        if ty + tb_h > self.height:
-            ty = max(0, self.height - tb_h)
         tx = max(0, min(x, self.width - tb_w)) if tb_w else x
         self.tb_win.geometry(f"+{self.x + tx}+{self.y + ty}")
 
@@ -203,73 +198,152 @@ class RegionSelector:
                 pass
 
     # ------------------------------------------------------------------ #
+    # 十字准星
+    # ------------------------------------------------------------------ #
+
+    def _show_crosshair(self, x, y, w, h):
+        """显示十字准星 + 实时尺寸标签。x, y 为鼠标位置，w, h 为当前选区尺寸。"""
+        W, H = self.width, self.height
+        # 水平线
+        if self._crosshair_h is None:
+            self._crosshair_h = self.canvas.create_line(
+                0, y, W, y, fill=CROSSHAIR_COLOR, width=CROSSHAIR_WIDTH)
+        else:
+            self.canvas.coords(self._crosshair_h, 0, y, W, y)
+        # 垂直线
+        if self._crosshair_v is None:
+            self._crosshair_v = self.canvas.create_line(
+                x, 0, x, H, fill=CROSSHAIR_COLOR, width=CROSSHAIR_WIDTH)
+        else:
+            self.canvas.coords(self._crosshair_v, x, 0, x, H)
+        # 尺寸标签（鼠标右下角）
+        text = f"{w} x {h}" if w > 0 and h > 0 else ""
+        lx = x + 16
+        ly = y + 16
+        if lx + 80 > W:
+            lx = x - 80
+        if ly + 20 > H:
+            ly = y - 20
+        if self._crosshair_label is None:
+            self._crosshair_label = self.canvas.create_text(
+                lx, ly, text=text, fill=LABEL_FG, anchor="nw",
+                font=("Microsoft YaHei UI", 9))
+            self.canvas.tag_raise(self._crosshair_label)
+            try:
+                bbox = tuple(self.canvas.bbox(self._crosshair_label))
+            except (TypeError, ValueError, tk.TclError):
+                bbox = None
+            if bbox:
+                x1, y1, x2, y2 = bbox
+                self._crosshair_label_bg = self.canvas.create_rectangle(
+                    x1 - 4, y1 - 2, x2 + 4, y2 + 2,
+                    fill=LABEL_BG, outline="", width=0)
+                self.canvas.tag_raise(self._crosshair_label)
+        else:
+            self.canvas.coords(self._crosshair_label, lx, ly)
+            self.canvas.itemconfig(self._crosshair_label, text=text)
+            if self._crosshair_label_bg:
+                try:
+                    bbox = tuple(self.canvas.bbox(self._crosshair_label))
+                except (TypeError, ValueError, tk.TclError):
+                    bbox = None
+                if bbox:
+                    x1, y1, x2, y2 = bbox
+                    self.canvas.coords(self._crosshair_label_bg, x1-4, y1-2, x2+4, y2+2)
+
+    def _hide_crosshair(self):
+        """隐藏十字准星。"""
+        for attr in ("_crosshair_h", "_crosshair_v", "_crosshair_label", "_crosshair_label_bg"):
+            item = getattr(self, attr, None)
+            if item is not None:
+                try:
+                    self.canvas.delete(item)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
+
+    # ------------------------------------------------------------------ #
     # 渲染
     # ------------------------------------------------------------------ #
 
     def _render_all(self):
         """重绘动态元素（遮罩/选区/手柄/标签/工具条）。
 
-        全屏背景图只在 _bg_ready 时绘制一次，后续拖动/缩放只更新动态元素，
-        避免每次鼠标事件都重绘全屏图导致卡死。
+        全屏背景图只在 _bg_ready 时绘制一次，后续拖动/缩放只更新动态元素。
+        使用 coords() 更新已有元素，避免 delete+create 的闪烁。
         """
-        # 清除上一次的动态元素
-        for item in self._items.values():
-            if isinstance(item, dict):
-                for child in item.values():
-                    self.canvas.delete(child)
-            elif item:
-                self.canvas.delete(item)
-        self._items.clear()
-
-        if self._mode != "adjust" or self._region is None:
+        l, t, r, b = self._region if self._region else (None, None, None, None)
+        if self._mode != "adjust" or l is None:
             return
 
-        l, t, r, b = self._region
-        # 暗化遮罩：画布 4 个角落的黑色矩形（框外暗化，框内保留原图）
         W, H = self.width, self.height
-        mask = lambda x1, y1, x2, y2: self.canvas.create_rectangle(
-            x1, y1, x2, y2, fill="black", stipple="gray50", width=0)
-        self._items["m1"] = mask(0, 0, r, b)        # 左上
-        self._items["m2"] = mask(l, 0, W, t)        # 右上
-        self._items["m3"] = mask(0, t, l, H)        # 左下
-        self._items["m4"] = mask(r, t, W, H)        # 右下
-        # 选区边框
-        self._items["rect"] = self.canvas.create_rectangle(
-            l, t, r, b, outline="white", width=2)
-        # 尺寸标签：优先放选区上方，越界则放下方。
-        # create_text 不支持 bg（Tcl 文本项无该选项），用深色矩形底 + 白字模拟
-        # "深色底标签"效果。
+
+        # 确保 4 个遮罩存在
+        if "m1" not in self._items:
+            self._items["m1"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m2"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m3"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m4"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["rect"] = self.canvas.create_rectangle(0, 0, 0, 0, outline="white", width=2)
+        # 更新遮罩坐标
+        self.canvas.coords(self._items["m1"], 0, 0, r, b)
+        self.canvas.coords(self._items["m2"], l, 0, W, t)
+        self.canvas.coords(self._items["m3"], 0, t, l, H)
+        self.canvas.coords(self._items["m4"], r, t, W, H)
+        # 更新选区边框
+        self.canvas.coords(self._items["rect"], l, t, r, b)
+
+        # 尺寸标签
         text = f"{r - l} x {b - t}"
         tx = l
         ty = t - 8
         if t - 24 < 0:
             ty = b + 8
-        tid = self.canvas.create_text(
-            tx, ty, text=text, fill=LABEL_FG, anchor="nw",
-            font=("Microsoft YaHei UI", 9))
-        self.canvas.tag_raise(tid)
-        try:
-            bbox = tuple(self.canvas.bbox(tid))
-        except (TypeError, ValueError, tk.TclError):
-            bbox = None
-        if bbox:
-            # bbox 返回 (x1, y1, x2, y2)，文本实际范围比 anchor 点多出一个
-            # 字宽/字高的量，用 bbox 精确包围（加 4px 内边距）
-            x1, y1, x2, y2 = bbox
-            self._items["label_bg"] = self.canvas.create_rectangle(
-                x1 - 4, y1 - 2, x2 + 4, y2 + 2,
-                fill=LABEL_BG, outline="", width=0)
+        if "label" not in self._items:
+            tid = self.canvas.create_text(
+                tx, ty, text=text, fill=LABEL_FG, anchor="nw",
+                font=("Microsoft YaHei UI", 9))
             self.canvas.tag_raise(tid)
-        self._items["label"] = tid
+            try:
+                bbox = tuple(self.canvas.bbox(tid))
+            except (TypeError, ValueError, tk.TclError):
+                bbox = None
+            if bbox:
+                x1, y1, x2, y2 = bbox
+                self._items["label_bg"] = self.canvas.create_rectangle(
+                    x1 - 4, y1 - 2, x2 + 4, y2 + 2,
+                    fill=LABEL_BG, outline="", width=0)
+                self.canvas.tag_raise(tid)
+            self._items["label"] = tid
+        else:
+            tid = self._items["label"]
+            self.canvas.coords(tid, tx, ty)
+            self.canvas.itemconfig(tid, text=text)
+            if "label_bg" in self._items:
+                try:
+                    bbox = tuple(self.canvas.bbox(tid))
+                except (TypeError, ValueError, tk.TclError):
+                    bbox = None
+                if bbox:
+                    x1, y1, x2, y2 = bbox
+                    self.canvas.coords(self._items["label_bg"], x1-4, y1-2, x2+4, y2+2)
+
         # 手柄
-        handles = {}
-        for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
-            s = self.HANDLE_SIZE
-            m = self.MARGIN
-            handles[name] = self.canvas.create_rectangle(
-                hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s,
-                fill="#ffffff", outline=TB_BG, width=1)
-        self._items["handles"] = handles
+        if "handles" not in self._items:
+            handles = {}
+            for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
+                s = self.HANDLE_SIZE
+                handles[name] = self.canvas.create_rectangle(
+                    hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s,
+                    fill="#ffffff", outline=TB_BG, width=1)
+            self._items["handles"] = handles
+        else:
+            for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
+                s = self.HANDLE_SIZE
+                self.canvas.coords(
+                    self._items["handles"][name],
+                    hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s)
+
         # 显示工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
 
@@ -282,7 +356,7 @@ class RegionSelector:
         }
 
     # ------------------------------------------------------------------ #
-    # 坐标 / 区域计算（保持与原 API 兼容，供测试使用）
+    # 坐标 / 区域计算
     # ------------------------------------------------------------------ #
 
     def _to_virtual(self, wx, wy):
@@ -351,7 +425,6 @@ class RegionSelector:
             self._drag_op = ("move", "move")
             self._drag_start = (event.x, event.y)
             self._drag_region = self._region
-            # Windows 无 "move" 光标，用 size_all（四向移动箭头）
             self.canvas.configure(cursor="size_all")
             return
 
@@ -366,6 +439,12 @@ class RegionSelector:
                 self._region = self._normalize((r[0], r[1], r[0] + r[2], r[1] + r[3]))
             else:
                 self._region = None
+            # 显示十字准星
+            if self._region:
+                l, t, rr, b = self._region
+                w = rr - l
+                h = b - t
+                self._show_crosshair(event.x, event.y, w, h)
             self._render_all()
             return
         if self._drag_op is None or self._drag_start is None:
@@ -386,6 +465,8 @@ class RegionSelector:
             if op in ("s", "sw", "se"):
                 b = b + dy
         self._region = self._normalize((l, t, r, b))
+        # 调整模式下隐藏十字准星
+        self._hide_crosshair()
         self._render_all()
 
     def _on_release(self, event):
@@ -393,11 +474,13 @@ class RegionSelector:
             # 点击太小：不进入调整，直接忽略
             self.start = None
             self._drag_op = None
+            self._hide_crosshair()
             return
         self._drag_op = None
         self._drag_start = None
         self._drag_region = None
         self.canvas.configure(cursor="crosshair")
+        self._hide_crosshair()
         if self._region is None:
             # 调整中被缩到无效 → 回退到纯选区模式
             self._mode = "select"
@@ -419,16 +502,13 @@ class RegionSelector:
         self._finish(None)
 
     def _finish(self, result):
-        """结束选区：记录结果并关闭选区窗口，再调 on_select 回调。
-
-        用 after(0) 推迟销毁+回调，避免在事件处理里同步销毁窗口导致事件循环
-        异常（遮罩卡住 / Tcl 解释器被破坏）。共享根窗口模式下不退出 mainloop。
-        """
+        """结束选区：记录结果并关闭选区窗口，再调 on_select 回调。"""
         if self._finished:
             return
         self._finished = True
         self.result = result
         self._tb_hide()
+        self._hide_crosshair()
         self.root.after(0, self._exit)
 
     def _exit(self):
@@ -444,6 +524,20 @@ class RegionSelector:
                 self.tb_win.withdraw()
             except tk.TclError:
                 pass
+        # 清理画布上的所有动态元素
+        for item in self._items.values():
+            if isinstance(item, dict):
+                for child in item.values():
+                    try:
+                        self.canvas.delete(child)
+                    except tk.TclError:
+                        pass
+            elif item:
+                try:
+                    self.canvas.delete(item)
+                except tk.TclError:
+                    pass
+        self._items.clear()
         self.on_select(self.result)
 
     def show(self):

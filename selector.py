@@ -118,11 +118,13 @@ class RegionSelector:
         threading.Thread(target=work, daemon=True).start()
 
     def _bg_ready(self, img):
+        """背景截图就绪：绘制一次全屏图，后续只更新动态元素。"""
         if not self.canvas.winfo_exists():
             return
         if img is not None:
             from PIL import ImageTk
             self._photo = ImageTk.PhotoImage(img)
+            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
         self._render_all()
 
     # ------------------------------------------------------------------ #
@@ -158,15 +160,24 @@ class RegionSelector:
         b.bind("<Button-1>", lambda e, c=command: c())
         return b
 
+    _tb_visible = False
+
     def _tb_show(self, pos, size):
-        """在选区上方/下方显示工具条，pos/size 为画布坐标的选区矩形。"""
+        """在选区上方/下方显示工具条，pos/size 为画布坐标的选区矩形。
+
+        只在工具条不可见时 deiconify 一次，后续只移动位置 + 更新文字，
+        避免每次拖动都 deiconify/update_idletasks 导致卡死。
+        """
         if not self.tb_win.winfo_exists():
             return
-        self.tb_win.deiconify()
-        self.tb_win.update_idletasks()
-        self.tb_label.configure(text=f"{size[2]} x {size[3]}")
         x, y = pos[0], pos[1]
         w, h = size[2], size[3]
+        # 只在首次显示时 deiconify + 测量
+        if not self._tb_visible:
+            self.tb_win.deiconify()
+            self.tb_win.update_idletasks()
+            self._tb_visible = True
+        self.tb_label.configure(text=f"{w} x {h}")
         tb_w = self.tb_win.winfo_width()
         tb_h = self.tb_win.winfo_height()
         # 默认放选区上方；放不下时放下方；左右贴边
@@ -179,6 +190,7 @@ class RegionSelector:
         self.tb_win.geometry(f"+{self.x + tx}+{self.y + ty}")
 
     def _tb_hide(self):
+        self._tb_visible = False
         if self.tb_win is not None and self.tb_win.winfo_exists():
             try:
                 self.tb_win.withdraw()
@@ -190,17 +202,32 @@ class RegionSelector:
     # ------------------------------------------------------------------ #
 
     def _render_all(self):
-        """重绘背景、暗化遮罩、选区框、手柄、尺寸标签。"""
-        self.canvas.delete("all")
-        if self._photo is not None:
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
+        """重绘动态元素（遮罩/选区/手柄/标签/工具条）。
+
+        全屏背景图只在 _bg_ready 时绘制一次，后续拖动/缩放只更新动态元素，
+        避免每次鼠标事件都重绘全屏图导致卡死。
+        """
+        # 清除上一次的动态元素
+        for item in self._items.values():
+            if isinstance(item, dict):
+                for child in item.values():
+                    self.canvas.delete(child)
+            elif item:
+                self.canvas.delete(item)
+        self._items.clear()
+
         if self._mode != "adjust" or self._region is None:
             return
 
         l, t, r, b = self._region
-        # 暗化遮罩：画布 4 个角落的黑色矩形（框内保留原图亮度）
-        self.canvas.create_rectangle(0, 0, r, b, fill="black",
-                                     stipple="gray50", width=0)
+        # 暗化遮罩：画布 4 个角落的黑色矩形（框外暗化，框内保留原图）
+        W, H = self.width, self.height
+        mask = lambda x1, y1, x2, y2: self.canvas.create_rectangle(
+            x1, y1, x2, y2, fill="black", stipple="gray50", width=0)
+        self._items["m1"] = mask(0, 0, r, b)        # 左上
+        self._items["m2"] = mask(l, 0, W, t)        # 右上
+        self._items["m3"] = mask(0, t, l, H)        # 左下
+        self._items["m4"] = mask(r, t, W, H)        # 右下
         # 选区边框
         self._items["rect"] = self.canvas.create_rectangle(
             l, t, r, b, outline="white", width=2)
@@ -208,11 +235,10 @@ class RegionSelector:
         text = f"{r - l} x {b - t}"
         lx = l
         ly = t - 8
-        anchor = "nw"
         if t - 24 < 0:
             ly = b + 8
         self._items["label"] = self.canvas.create_text(
-            lx, ly, text=text, fill=LABEL_FG, bg=LABEL_BG, anchor=anchor,
+            lx, ly, text=text, fill=LABEL_FG, bg=LABEL_BG, anchor="nw",
             font=("Microsoft YaHei UI", 9))
         # 手柄
         handles = {}

@@ -8,12 +8,55 @@ from selector import RegionSelector
 
 @pytest.fixture
 def fake_root():
-    """让 RegionSelector 使用 mock 的 Tk 窗口，不创建真实 GUI。"""
+    """让 RegionSelector 使用 mock 的 Tk 窗口，不创建真实 GUI。
+
+    同时打桩 PIL.ImageTk / capture，避免依赖真实截屏或 PIL 渲染。
+    """
+    import sys
+    import types
+
     with pytest.MonkeyPatch.context() as m:
         mock_root = MagicMock(name="tk_root")
         mock_root.geometry = MagicMock()
         m.setattr(tk, "Tk", lambda: mock_root)
         m.setattr(tk, "Canvas", MagicMock(return_value=MagicMock(name="canvas")))
+        tb_win = MagicMock(name="tb_win")
+        tb_win.winfo_width.return_value = 100
+        tb_win.winfo_height.return_value = 30
+        tb_win.winfo_exists.return_value = True
+        m.setattr(tk, "Toplevel", MagicMock(return_value=tb_win))
+        m.setattr(tk, "Frame", MagicMock(return_value=MagicMock(name="frame")))
+        m.setattr(tk, "Label", MagicMock(return_value=MagicMock(name="label")))
+
+        # 假 PIL 模块
+        fake_pil = types.ModuleType("PIL")
+        fake_pil_image = types.ModuleType("PIL.Image")
+        fake_pil_imagetk = types.ModuleType("PIL.ImageTk")
+        fake_pil_imagetk.PhotoImage = MagicMock(name="PhotoImage")
+        fake_pil.Image = fake_pil_image
+        fake_pil.ImageTk = fake_pil_imagetk
+        m.setitem(sys.modules, "PIL", fake_pil)
+        m.setitem(sys.modules, "PIL.Image", fake_pil_image)
+        m.setitem(sys.modules, "PIL.ImageTk", fake_pil_imagetk)
+
+        # 假 capture 模块（避免 mss）
+        fake_capture = types.ModuleType("capture")
+        fake_capture.capture_fullscreen = MagicMock(return_value=None)
+        m.setitem(sys.modules, "capture", fake_capture)
+
+        # 让 threading.Thread 不真正启动（避免后台抓图线程）
+        import threading
+        real_thread = threading.Thread
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                pass
+
+            def start(self):
+                pass
+
+        m.setattr(threading, "Thread", FakeThread)
+
         yield mock_root
 
 
@@ -39,3 +82,82 @@ def test_calc_region_min_size(fake_root):
     sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
     # 点击太小（< 5px）视为无效，返回 None
     assert sel._calc_region(100, 100, 101, 101) is None
+
+
+def test_normalize(fake_root):
+    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    # 正常
+    assert sel._normalize((100, 100, 200, 200)) == (100, 100, 200, 200)
+    # 未归一化
+    assert sel._normalize((200, 200, 100, 100)) == (100, 100, 200, 200)
+    # 越界
+    assert sel._normalize((-50, 100, 200, 200)) == (0, 100, 200, 200)
+    assert sel._normalize((100, 100, 2000, 200)) == (100, 100, 1920, 200)
+    # 太小
+    assert sel._normalize((100, 100, 102, 102)) is None
+    # 画布外
+    assert sel._normalize((2000, 2000, 2100, 2100)) is None
+
+
+def test_handle_coords(fake_root):
+    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    hc = sel._handle_coords(100, 100, 300, 200)
+    assert hc["nw"] == (100, 100)
+    assert hc["n"] == (200, 100)
+    assert hc["ne"] == (300, 100)
+    assert hc["e"] == (300, 150)
+    assert hc["se"] == (300, 200)
+    assert hc["s"] == (200, 200)
+    assert hc["sw"] == (100, 200)
+    assert hc["w"] == (100, 150)
+
+
+def test_hit_test(fake_root):
+    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel._mode = "adjust"
+    sel._region = (100, 100, 300, 200)
+    assert sel._hit_test(100, 100) == "nw"
+    assert sel._hit_test(200, 100) == "n"
+    assert sel._hit_test(300, 200) == "se"
+    assert sel._hit_test(200, 150) is None
+    assert sel._hit_test(400, 300) is None
+
+
+def test_select_to_adjust_flow(fake_root):
+    """模拟 select → adjust 流程。"""
+    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    assert sel._mode == "select"
+
+    class E:
+        def __init__(self, x, y):
+            self.x, self.y = x, y
+
+    sel._on_press(E(100, 100))
+    assert sel.start == (100, 100)
+
+    sel._on_drag(E(300, 200))
+    assert sel._mode == "adjust"
+    assert sel._region == (100, 100, 300, 200)
+
+    sel._on_release(E(300, 200))
+    assert sel._mode == "adjust"
+
+    # 拖动 nw 手柄
+    sel._on_press(E(100, 100))
+    assert sel._drag_op == ("nw", "resize")
+    sel._on_drag(E(50, 50))
+    assert sel._region == (50, 50, 300, 200)
+    sel._on_release(E(50, 50))
+
+    # 拖动内部 → 移动
+    sel._on_press(E(200, 150))
+    assert sel._drag_op == ("move", "move")
+    sel._on_drag(E(220, 170))
+    assert sel._region == (70, 70, 320, 220)
+    sel._on_release(E(220, 170))
+
+    # 确认
+    sel._confirm()
+    assert sel.result is not None
+    # 区域 (70, 70, 320, 220) 转为 (left, top, w, h) 并加上窗口偏移 (0, 0)
+    assert sel.result == (70, 70, 250, 150)

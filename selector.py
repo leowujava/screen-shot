@@ -351,7 +351,8 @@ class RegionSelector:
             self._drag_op = ("move", "move")
             self._drag_start = (event.x, event.y)
             self._drag_region = self._region
-            self.canvas.configure(cursor="move")
+            # Windows 无 "move" 光标，用 size_all（四向移动箭头）
+            self.canvas.configure(cursor="size_all")
             return
 
     def _on_drag(self, event):

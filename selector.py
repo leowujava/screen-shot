@@ -236,15 +236,31 @@ class RegionSelector:
         # 选区边框
         self._items["rect"] = self.canvas.create_rectangle(
             l, t, r, b, outline="white", width=2)
-        # 尺寸标签：优先放选区上方，越界则放下方
+        # 尺寸标签：优先放选区上方，越界则放下方。
+        # create_text 不支持 bg（Tcl 文本项无该选项），用深色矩形底 + 白字模拟
+        # "深色底标签"效果。
         text = f"{r - l} x {b - t}"
-        lx = l
-        ly = t - 8
+        tx = l
+        ty = t - 8
         if t - 24 < 0:
-            ly = b + 8
-        self._items["label"] = self.canvas.create_text(
-            lx, ly, text=text, fill=LABEL_FG, bg=LABEL_BG, anchor="nw",
+            ty = b + 8
+        tid = self.canvas.create_text(
+            tx, ty, text=text, fill=LABEL_FG, anchor="nw",
             font=("Microsoft YaHei UI", 9))
+        self.canvas.tag_raise(tid)
+        try:
+            bbox = tuple(self.canvas.bbox(tid))
+        except (TypeError, ValueError, tk.TclError):
+            bbox = None
+        if bbox:
+            # bbox 返回 (x1, y1, x2, y2)，文本实际范围比 anchor 点多出一个
+            # 字宽/字高的量，用 bbox 精确包围（加 4px 内边距）
+            x1, y1, x2, y2 = bbox
+            self._items["label_bg"] = self.canvas.create_rectangle(
+                x1 - 4, y1 - 2, x2 + 4, y2 + 2,
+                fill=LABEL_BG, outline="", width=0)
+            self.canvas.tag_raise(tid)
+        self._items["label"] = tid
         # 手柄
         handles = {}
         for name, (hx, hy) in self._handle_coords(l, t, r, b).items():

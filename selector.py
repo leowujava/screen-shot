@@ -443,6 +443,17 @@ class RegionSelector:
             sx, sy = self.start
             x1, y1 = min(sx, event.x), min(sy, event.y)
             x2, y2 = max(sx, event.x), max(sy, event.y)
+            # 鼠标事件坐标范围是 [0, width-1]，拖到屏幕边缘时 snap 到完整边缘，
+            # 否则选区永远差 1px 选不满（4K 屏 3840px 时差距明显）。
+            # 起点和终点任一贴边都要 snap（覆盖正向/反向拖拽）。
+            if sx <= 1 or event.x <= 1:
+                x1 = 0
+            if sy <= 1 or event.y <= 1:
+                y1 = 0
+            if sx >= self.width - 2 or event.x >= self.width - 2:
+                x2 = self.width
+            if sy >= self.height - 2 or event.y >= self.height - 2:
+                y2 = self.height
             w = x2 - x1
             h = y2 - y1
             # 如果拖得太小（< 5px），保持最小框

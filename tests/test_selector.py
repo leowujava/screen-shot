@@ -161,3 +161,37 @@ def test_select_to_adjust_flow(fake_root):
     assert sel.result is not None
     # 区域 (70, 70, 320, 220) 转为 (left, top, w, h) 并加上窗口偏移 (0, 0)
     assert sel.result == (70, 70, 250, 150)
+
+
+def test_4k_full_screen_selection(fake_root):
+    """4K 屏（3840x2160）从左上拖到右下，选区应 snap 到屏幕边缘。
+
+    回归测试：鼠标事件坐标范围是 [0, width-1]，拖到边缘时如果
+    不 snap，选区永远差 1px 选不满。
+    """
+    sel = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+
+    class E:
+        def __init__(self, x, y):
+            self.x, self.y = x, y
+
+    # 按下 (10, 10)，拖到右边缘 (3839, 2159)
+    sel._on_press(E(10, 10))
+    sel._on_drag(E(3839, 2159))
+    # 右边缘和下边缘应 snap 到 width/height
+    assert sel._region[2] == 3840, f"右边缘没到: {sel._region[2]}"
+    assert sel._region[3] == 2160, f"下边缘没到: {sel._region[3]}"
+    assert sel._region[0] == 10
+    assert sel._region[1] == 10
+
+    # 反向：从右上 (3839, 2159) 拖到左下 (10, 10)，也应选满
+    sel2 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel2._on_press(E(3839, 2159))
+    sel2._on_drag(E(10, 10))
+    assert sel2._region == (10, 10, 3840, 2160), f"反向选满失败: {sel2._region}"
+
+    # 中间区域不触发 snap
+    sel3 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel3._on_press(E(100, 100))
+    sel3._on_drag(E(500, 300))
+    assert sel3._region == (100, 100, 500, 300)

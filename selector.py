@@ -63,6 +63,7 @@ class RegionSelector:
         self._crosshair_v = None  # 十字准星垂直线
         self._crosshair_label = None  # 十字准星尺寸标签
         self._crosshair_label_bg = None
+        self._bg_photo = None    # 背景截图（用于暗化效果）
 
         if self._owns_root:
             self.root = tk.Tk()
@@ -71,15 +72,39 @@ class RegionSelector:
             # 共享根窗口：选区作为其上的无边框置顶覆盖层
             self.root = tk.Toplevel(root)
             self.root.title("")
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+        # 关键：用 Tk 的屏幕尺寸（而非 mss 的虚拟桌面尺寸）来设置窗口大小。
+        # mss 可能返回物理像素（如 5760x2160），而 Tk 的鼠标事件坐标
+        # 在逻辑像素空间（如 2560x1440）。如果窗口用 mss 尺寸，鼠标事件
+        # 最大坐标只有 Tk 屏幕尺寸，导致永远选不到真正的屏幕边缘。
+        try:
+            tk_w = self.root.winfo_screenwidth()
+            tk_h = self.root.winfo_screenheight()
+        except (tk.TclError, TypeError):
+            # 测试环境或 Tk 未就绪时，回退到传入的 width/height
+            tk_w = width
+            tk_h = height
+        # 如果 Tk 屏幕尺寸无效（0 或异常），也回退
+        if not isinstance(tk_w, int) or tk_w <= 0:
+            tk_w = width
+        if not isinstance(tk_h, int) or tk_h <= 0:
+            tk_h = height
+        self._tk_w = tk_w
+        self._tk_h = tk_h
+        # 坐标映射：Tk 坐标 → 虚拟桌面坐标的比例
+        self._scale_x = width / tk_w if tk_w else 1.0
+        self._scale_y = height / tk_h if tk_h else 1.0
+
+        self.root.geometry(f"{tk_w}x{tk_h}+{x}+{y}")
         self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
         # 置顶 + 无边框
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
-        self.root.attributes("-alpha", 1.0)
+        # 半透明：让屏幕内容透出来，不定格画面
+        self.root.attributes("-alpha", 0.5)
 
-        # 画布：铺满整个覆盖层，底色为黑色（配合 alpha 遮罩实现暗化）
+        # 画布：铺满整个覆盖层，底色为黑色（半透明后呈现暗化效果）
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
@@ -92,10 +117,6 @@ class RegionSelector:
         self.root.bind("<Escape>", lambda e: self._cancel())
         self.root.bind("<Return>", lambda e: self._confirm())
 
-        # 截图背景图（全屏抓取），用于"框外暗化、框内原图"的遮罩效果
-        self._photo = None
-        self._init_background()
-
         # 深色工具条（初始隐藏，首次拖动出现）
         self._build_toolbar()
         self.tb_win.bind("<Escape>", lambda e: self._cancel())
@@ -103,34 +124,6 @@ class RegionSelector:
 
         self.root.focus_force()
         self._finished = False
-
-    # ------------------------------------------------------------------ #
-    # 背景（遮罩）
-    # ------------------------------------------------------------------ #
-
-    def _init_background(self):
-        """后台抓取全屏截图并铺到画布。"""
-        import threading
-
-        def work():
-            try:
-                from capture import capture_fullscreen
-                img = capture_fullscreen()
-            except Exception:
-                img = None
-            self.root.after(0, lambda: self._bg_ready(img))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _bg_ready(self, img):
-        """背景截图就绪：绘制一次全屏图，后续只更新动态元素。"""
-        if not self.canvas.winfo_exists():
-            return
-        if img is not None:
-            from PIL import ImageTk
-            self._photo = ImageTk.PhotoImage(img)
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo)
-        self._render_all()
 
     # ------------------------------------------------------------------ #
     # 工具条
@@ -180,13 +173,14 @@ class RegionSelector:
         self.tb_label.configure(text=f"{w} x {h}")
         tb_w = self.tb_win.winfo_width()
         tb_h = self.tb_win.winfo_height()
-        # 默认放选区下方；放不下时放上方
+        # 默认放选区下方；放不下时放上方（用 Tk 屏幕尺寸判断边界）
+        W, H = self._tk_w, self._tk_h
         ty = y + h + 4
-        if ty + tb_h > self.height:
+        if ty + tb_h > H:
             ty = y - tb_h - 4
         if ty < 0:
             ty = y + h + 4
-        tx = max(0, min(x, self.width - tb_w)) if tb_w else x
+        tx = max(0, min(x, W - tb_w)) if tb_w else x
         self.tb_win.geometry(f"+{self.x + tx}+{self.y + ty}")
 
     def _tb_hide(self):
@@ -203,7 +197,7 @@ class RegionSelector:
 
     def _show_crosshair(self, x, y, w, h):
         """显示十字准星 + 实时尺寸标签。x, y 为鼠标位置，w, h 为当前选区尺寸。"""
-        W, H = self.width, self.height
+        W, H = self._tk_w, self._tk_h
         # 水平线
         if self._crosshair_h is None:
             self._crosshair_h = self.canvas.create_line(
@@ -269,14 +263,16 @@ class RegionSelector:
     def _render_all(self):
         """重绘动态元素（遮罩/选区/手柄/标签/工具条）。
 
-        全屏背景图只在 _bg_ready 时绘制一次，后续拖动/缩放只更新动态元素。
+        使用 Tk 屏幕尺寸（self._tk_w x self._tk_h）作为画布范围，
+        鼠标事件坐标在 [0, _tk_w-1] x [0, _tk_h-1] 范围内。
         使用 coords() 更新已有元素，避免 delete+create 的闪烁。
         """
         l, t, r, b = self._region if self._region else (None, None, None, None)
         if self._mode != "adjust" or l is None:
             return
 
-        W, H = self.width, self.height
+        # 画布范围 = Tk 屏幕尺寸（不是 mss 虚拟桌面尺寸）
+        W, H = self._tk_w, self._tk_h
 
         # 确保 4 个遮罩存在
         if "m1" not in self._items:
@@ -376,16 +372,17 @@ class RegionSelector:
         return (left, top, w, h)
 
     def _normalize(self, region):
-        """把 (l, t, r, b) 归一化并夹到画布内，返回 (l, t, r, b)；无效返回 None。"""
+        """把 (l, t, r, b) 归一化并夹到画布内（Tk 屏幕尺寸），返回 (l, t, r, b)；无效返回 None。"""
         l, t, r, b = region
         l, r = min(l, r), max(l, r)
         t, b = min(t, b), max(t, b)
-        if r < 0 or b < 0 or l >= self.width or t >= self.height:
+        W, H = self._tk_w, self._tk_h
+        if r < 0 or b < 0 or l >= W or t >= H:
             return None
-        l = max(0, min(l, self.width))
-        t = max(0, min(t, self.height))
-        r = max(0, min(r, self.width))
-        b = max(0, min(b, self.height))
+        l = max(0, min(l, W))
+        t = max(0, min(t, H))
+        r = max(0, min(r, W))
+        b = max(0, min(b, H))
         if r - l < self.MIN_SIZE or b - t < self.MIN_SIZE:
             return None
         return (l, t, r, b)
@@ -411,10 +408,11 @@ class RegionSelector:
             # 按下立刻创建最小框并进入调整模式（仿飞书：按下就有框）
             self.start = (event.x, event.y)
             self._mode = "adjust"
-            # 创建 1x1 的最小框（以按下点为左上角）
+            # 创建 1x1 的最小框（以按下点为左上角），夹到 Tk 屏幕范围内
             x, y = event.x, event.y
-            x = max(0, min(x, self.width - 1))
-            y = max(0, min(y, self.height - 1))
+            W, H = self._tk_w, self._tk_h
+            x = max(0, min(x, W - 1))
+            y = max(0, min(y, H - 1))
             self._region = (x, y, x + 1, y + 1)
             self._render_all()
             return
@@ -443,17 +441,18 @@ class RegionSelector:
             sx, sy = self.start
             x1, y1 = min(sx, event.x), min(sy, event.y)
             x2, y2 = max(sx, event.x), max(sy, event.y)
-            # 鼠标事件坐标范围是 [0, width-1]，拖到屏幕边缘时 snap 到完整边缘，
-            # 否则选区永远差 1px 选不满（4K 屏 3840px 时差距明显）。
+            # 鼠标事件坐标范围是 [0, _tk_w-1]，拖到屏幕边缘时 snap 到完整边缘，
+            # 否则选区永远差 1px 选不满。
             # 起点和终点任一贴边都要 snap（覆盖正向/反向拖拽）。
+            W, H = self._tk_w, self._tk_h
             if sx <= 1 or event.x <= 1:
                 x1 = 0
             if sy <= 1 or event.y <= 1:
                 y1 = 0
-            if sx >= self.width - 2 or event.x >= self.width - 2:
-                x2 = self.width
-            if sy >= self.height - 2 or event.y >= self.height - 2:
-                y2 = self.height
+            if sx >= W - 2 or event.x >= W - 2:
+                x2 = W
+            if sy >= H - 2 or event.y >= H - 2:
+                y2 = H
             w = x2 - x1
             h = y2 - y1
             # 如果拖得太小（< 5px），保持最小框
@@ -514,7 +513,14 @@ class RegionSelector:
             self._cancel()
             return
         l, t, r, b = self._region
-        self._finish((l + self.x, t + self.y, r - l, b - t))
+        # 把 Tk 坐标换算回虚拟桌面坐标（mss 的坐标系），用于 capture_region
+        # Tk 坐标 [0, _tk_w] 映射到虚拟桌面 [0, self.width]
+        vx_l = int(l * self._scale_x)
+        vx_t = int(t * self._scale_y)
+        vx_r = int(r * self._scale_x)
+        vx_b = int(b * self._scale_y)
+        # 加回虚拟桌面原点偏移
+        self._finish((vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t))
 
     def _cancel(self):
         self._finish(None)

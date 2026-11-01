@@ -86,17 +86,18 @@ def test_calc_region_min_size(fake_root):
 
 def test_normalize(fake_root):
     sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    W, H = sel._actual_w, sel._actual_h
     # 正常
     assert sel._normalize((100, 100, 200, 200)) == (100, 100, 200, 200)
     # 未归一化
     assert sel._normalize((200, 200, 100, 100)) == (100, 100, 200, 200)
     # 越界
     assert sel._normalize((-50, 100, 200, 200)) == (0, 100, 200, 200)
-    assert sel._normalize((100, 100, 2000, 200)) == (100, 100, 1920, 200)
+    assert sel._normalize((100, 100, W + 80, 200)) == (100, 100, W, 200)
     # 太小
     assert sel._normalize((100, 100, 102, 102)) is None
     # 画布外
-    assert sel._normalize((2000, 2000, 2100, 2100)) is None
+    assert sel._normalize((W + 100, H + 100, W + 200, H + 200)) is None
 
 
 def test_handle_coords(fake_root):
@@ -159,36 +160,44 @@ def test_select_to_adjust_flow(fake_root):
     # 确认
     sel._confirm()
     assert sel.result is not None
-    # 区域 (70, 70, 320, 220) 转为 (left, top, w, h) 并加上窗口偏移 (0, 0)
-    assert sel.result == (70, 70, 250, 150)
+    # 区域 (70, 70, 320, 220) 经 scale 映射后转为 mss 虚拟桌面坐标
+    l, t, r, b = 70, 70, 320, 220
+    sx, sy = sel._scale_x, sel._scale_y
+    vx_l = int(l * sx)
+    vx_t = int(t * sy)
+    vx_r = int(r * sx)
+    vx_b = int(b * sy)
+    assert sel.result == (vx_l + sel.x, vx_t + sel.y, vx_r - vx_l, vx_b - vx_t)
 
 
 def test_4k_full_screen_selection(fake_root):
-    """4K 屏（3840x2160）从左上拖到右下，选区应 snap 到屏幕边缘。
+    """4K 屏从左上拖到右下，选区应 snap 到屏幕边缘。
 
-    回归测试：鼠标事件坐标范围是 [0, width-1]，拖到边缘时如果
+    回归测试：鼠标事件坐标范围是 [0, _actual_w-1]，拖到边缘时如果
     不 snap，选区永远差 1px 选不满。
     """
     sel = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    W, H = sel._actual_w, sel._actual_h
 
     class E:
         def __init__(self, x, y):
             self.x, self.y = x, y
 
-    # 按下 (10, 10)，拖到右边缘 (3839, 2159)
+    # 按下 (10, 10)，拖到右边缘 (W-1, H-1)
     sel._on_press(E(10, 10))
-    sel._on_drag(E(3839, 2159))
-    # 右边缘和下边缘应 snap 到 width/height
-    assert sel._region[2] == 3840, f"右边缘没到: {sel._region[2]}"
-    assert sel._region[3] == 2160, f"下边缘没到: {sel._region[3]}"
+    sel._on_drag(E(W - 1, H - 1))
+    # 右边缘和下边缘应 snap 到 W/H
+    assert sel._region[2] == W, f"右边缘没到: {sel._region[2]} != {W}"
+    assert sel._region[3] == H, f"下边缘没到: {sel._region[3]} != {H}"
     assert sel._region[0] == 10
     assert sel._region[1] == 10
 
-    # 反向：从右上 (3839, 2159) 拖到左下 (10, 10)，也应选满
+    # 反向：从右上 (W-1, H-1) 拖到左下 (10, 10)，也应选满
     sel2 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
-    sel2._on_press(E(3839, 2159))
+    W2, H2 = sel2._actual_w, sel2._actual_h
+    sel2._on_press(E(W2 - 1, H2 - 1))
     sel2._on_drag(E(10, 10))
-    assert sel2._region == (10, 10, 3840, 2160), f"反向选满失败: {sel2._region}"
+    assert sel2._region == (10, 10, W2, H2), f"反向选满失败: {sel2._region}"
 
     # 中间区域不触发 snap
     sel3 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)

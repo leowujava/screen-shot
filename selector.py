@@ -74,27 +74,16 @@ class RegionSelector:
             self.root = tk.Toplevel(root)
             self.root.title("")
 
-        # 用 Tk 的屏幕尺寸设置窗口大小。
-        # Tk 只能在其屏幕尺寸范围内渲染窗口（多屏时 = 主显示器），
-        # 用更大的尺寸会被 Tk 钳制回去，导致遮罩层覆盖不全。
-        # 遮罩层覆盖 Tk 可见范围，截图按 scale 映射到 mss 虚拟桌面坐标。
-        try:
-            self._tk_w = self.root.winfo_screenwidth()
-            self._tk_h = self.root.winfo_screenheight()
-        except (tk.TclError, TypeError):
-            self._tk_w = width
-            self._tk_h = height
-        if not isinstance(self._tk_w, int) or self._tk_w <= 0:
-            self._tk_w = width
-        if not isinstance(self._tk_h, int) or self._tk_h <= 0:
-            self._tk_h = height
+        # 动态计算实际屏幕大小（虚拟桌面），用它设置遮罩层窗口尺寸。
+        # Win32 GetSystemMetrics 返回的是当前进程 DPI 感知状态下的真实像素，
+        # 与 mss 截屏坐标系一致。直接用作窗口尺寸，遮罩层恰好覆盖全部屏幕。
+        self._actual_w, self._actual_h = self._get_screen_size()
+        # 坐标映射：画布坐标 → mss 虚拟桌面坐标的比例
+        # 画布 (0,0)-(_actual_w,_actual_h) 对应虚拟桌面 (x,y)-(x+width,y+height)
+        self._scale_x = width / self._actual_w if self._actual_w else 1.0
+        self._scale_y = height / self._actual_h if self._actual_h else 1.0
 
-        # 坐标映射：Tk 坐标 → mss 虚拟桌面坐标的比例
-        # Tk 的 (0,0)-(_tk_w,_tk_h) 对应虚拟桌面的 (x,y)-(x+width,y+height)
-        self._scale_x = width / self._tk_w if self._tk_w else 1.0
-        self._scale_y = height / self._tk_h if self._tk_h else 1.0
-
-        self.root.geometry(f"{self._tk_w}x{self._tk_h}+{x}+{y}")
+        self.root.geometry(f"{self._actual_w}x{self._actual_h}+{x}+{y}")
         self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
         # 置顶 + 无边框
@@ -123,6 +112,35 @@ class RegionSelector:
 
         self.root.focus_force()
         self._finished = False
+
+    # ------------------------------------------------------------------ #
+    # 屏幕尺寸
+    # ------------------------------------------------------------------ #
+
+    def _get_screen_size(self):
+        """动态获取实际屏幕大小（虚拟桌面），返回 (width, height)。
+
+        优先用 Win32 GetSystemMetrics（与 mss 截屏坐标系一致），
+        失败时回退到 Tk 屏幕尺寸，再失败回退到传入的 width/height。
+        """
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                w = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+                h = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+                if w > 0 and h > 0:
+                    return w, h
+            except Exception:
+                pass
+        try:
+            w = self.root.winfo_screenwidth()
+            h = self.root.winfo_screenheight()
+            if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+                return w, h
+        except (tk.TclError, TypeError):
+            pass
+        return self.width, self.height
 
     # ------------------------------------------------------------------ #
     # 工具条
@@ -173,7 +191,7 @@ class RegionSelector:
         tb_w = self.tb_win.winfo_width()
         tb_h = self.tb_win.winfo_height()
         # 默认放选区下方；放不下时放上方（用 Tk 屏幕尺寸判断边界）
-        W, H = self._tk_w, self._tk_h
+        W, H = self._actual_w, self._actual_h
         ty = y + h + 4
         if ty + tb_h > H:
             ty = y - tb_h - 4
@@ -196,7 +214,7 @@ class RegionSelector:
 
     def _show_crosshair(self, x, y, w, h):
         """显示十字准星 + 实时尺寸标签。x, y 为鼠标位置，w, h 为当前选区尺寸。"""
-        W, H = self._tk_w, self._tk_h
+        W, H = self._actual_w, self._actual_h
         # 水平线
         if self._crosshair_h is None:
             self._crosshair_h = self.canvas.create_line(
@@ -271,7 +289,7 @@ class RegionSelector:
             return
 
         # 画布范围 = Tk 屏幕尺寸（不是 mss 虚拟桌面尺寸）
-        W, H = self._tk_w, self._tk_h
+        W, H = self._actual_w, self._actual_h
 
         # 确保 4 个遮罩存在
         if "m1" not in self._items:
@@ -375,7 +393,7 @@ class RegionSelector:
         l, t, r, b = region
         l, r = min(l, r), max(l, r)
         t, b = min(t, b), max(t, b)
-        W, H = self._tk_w, self._tk_h
+        W, H = self._actual_w, self._actual_h
         if r < 0 or b < 0 or l >= W or t >= H:
             return None
         l = max(0, min(l, W))
@@ -409,7 +427,7 @@ class RegionSelector:
             self._mode = "adjust"
             # 创建 1x1 的最小框（以按下点为左上角），夹到 Tk 屏幕范围内
             x, y = event.x, event.y
-            W, H = self._tk_w, self._tk_h
+            W, H = self._actual_w, self._actual_h
             x = max(0, min(x, W - 1))
             y = max(0, min(y, H - 1))
             self._region = (x, y, x + 1, y + 1)
@@ -443,7 +461,7 @@ class RegionSelector:
             # 鼠标事件坐标范围是 [0, width-1]，拖到屏幕边缘时 snap 到完整边缘，
             # 否则选区永远差 1px 选不满。
             # 起点和终点任一贴边都要 snap（覆盖正向/反向拖拽）。
-            W, H = self._tk_w, self._tk_h
+            W, H = self._actual_w, self._actual_h
             if sx <= 1 or event.x <= 1:
                 x1 = 0
             if sy <= 1 or event.y <= 1:

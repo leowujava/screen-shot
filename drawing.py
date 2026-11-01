@@ -1,6 +1,6 @@
 """共享绘制函数（纯 PIL，无 Tk 依赖）。
 
-供 editor.py 和 annotation.py 使用。
+供 editor.py 和 selector.py 使用。
 """
 import math
 from PIL import Image, ImageDraw

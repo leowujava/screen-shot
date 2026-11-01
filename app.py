@@ -57,9 +57,9 @@ def _safe_copy_to_clipboard(img):
 
 
 def process_region_selection(region, annotated_img):
-    """选区 + 标注结果 → 复制到剪贴板并保存。region 为 None 时不做任何事。
+    """选区 + 标注结果 → 复制到剪贴板。region 为 None 时不做任何事。
 
-    确认后不再打开 Editor，直接在 Selector 中完成标注后复制 + 保存。
+    确认后不再打开 Editor，只在 Selector 中完成标注后复制到剪贴板（不自动保存）。
     region: (left, top, width, height) 虚拟桌面坐标
     annotated_img: PIL Image（选区 crop + 标注）
     必须在主线程（Tk 主循环所在线程）调用。
@@ -67,7 +67,6 @@ def process_region_selection(region, annotated_img):
     if region is None or annotated_img is None:
         return
     _safe_copy_to_clipboard(annotated_img)
-    save_image(annotated_img, None)
 
 
 def _virtual_screen_origin():

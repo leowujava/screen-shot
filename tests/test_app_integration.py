@@ -1,11 +1,11 @@
-"""验证 process_region_selection 确认后直接复制 + 保存，不再打开 Editor。"""
+"""验证 process_region_selection 确认后只复制到剪贴板，不自动保存、不打开 Editor。"""
 import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
 
-def test_process_region_selection_copies_and_saves():
-    """确认后应复制到剪贴板并保存，不打开 Editor。"""
+def test_process_region_selection_copies_only():
+    """确认后应只复制到剪贴板，不自动保存。"""
     import app
     app._tk_root_holder["root"] = MagicMock()
 
@@ -17,7 +17,7 @@ def test_process_region_selection_copies_and_saves():
          patch.object(app, "save_image") as mock_save:
         app.process_region_selection(region, annotated)
         mock_copy.assert_called_once_with(annotated)
-        mock_save.assert_called_once_with(annotated, None)
+        mock_save.assert_not_called()
 
 
 def test_process_region_selection_none_region_does_nothing():

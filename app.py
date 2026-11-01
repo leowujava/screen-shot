@@ -16,6 +16,7 @@ from capture import (
 )
 from editor import Editor
 from selector import RegionSelector
+from annotation import AnnotationWindow
 
 # 全局持有的共享 Tk 根窗口（在 main 的主线程创建）
 _tk_root_holder = {}
@@ -57,18 +58,35 @@ def _safe_copy_to_clipboard(img):
             pass
 
 
-def process_region_selection(img, region):
-    """区域选区结果 → 复制到剪贴板并打开编辑器。region 为 None 时不做任何事。
+def process_region_selection(full, region):
+    """区域选区结果 → 打开标注窗口。region 为 None 时不做任何事。
 
+    full: 全屏截图（PIL Image）
+    region: (left, top, width, height) 虚拟桌面坐标
     必须在主线程（Tk 主循环所在线程）调用。
     """
     if region is None:
         return
-    left, top, w, h = region
-    region_img = capture_region(left, top, w, h)
-    _safe_copy_to_clipboard(region_img)
-    # 编辑器挂到共享根窗口上（非阻塞，由主循环驱动）
-    Editor(region_img, on_close=None, root=_tk_root_holder.get("root")).show()
+    root = _tk_root_holder.get("root")
+
+    def on_confirm(annotated_img):
+        # 标注结果交给 Editor（保留精修/OCR/保存）
+        Editor(annotated_img, on_close=None, root=root).show()
+
+    def on_copy(annotated_img):
+        _safe_copy_to_clipboard(annotated_img)
+
+    def on_save(annotated_img):
+        save_image(annotated_img, None)
+
+    def on_cancel():
+        pass
+
+    AnnotationWindow(
+        full, region,
+        on_confirm, on_copy, on_save, on_cancel,
+        root,
+    ).show()
 
 
 def _virtual_screen_origin():

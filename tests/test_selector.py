@@ -368,3 +368,38 @@ def test_drag_frame_cost_bounded(fake_root):
         f"100 帧拖动 winfo 总调用 {total_winfo} 次（{winfo_count}），"
         f"超出预期上限 10，工具条布局计算未优化"
     )
+
+
+# =================================================================== #
+# Task 2: 工具条按钮测试
+# =================================================================== #
+
+def test_toolbar_has_all_buttons(fake_root):
+    """工具条必须包含完整按钮集合。"""
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    # 工具按钮
+    for tool in ("brush", "rect", "ellipse", "arrow", "mosaic", "text"):
+        assert tool in sel._tool_btns, f"缺少工具按钮: {tool}"
+    # 操作按钮
+    for key in ("confirm", "copy", "save", "cancel"):
+        assert key in sel._tb_btns, f"缺少操作按钮: {key}"
+    # 每个按钮都绑定了 <Button-1>
+    for b in list(sel._tool_btns.values()) + list(sel._tb_btns.values()):
+        bound = [c.args[0] for c in b.bind.call_args_list
+                 if c.args and c.args[0] == "<Button-1>"]
+        assert bound, f"按钮未绑定点击事件: {b}"
+
+
+def test_select_tool_updates_state(fake_root):
+    """点击工具按钮应更新 self.tool。"""
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._select_tool("arrow")
+    assert sel.tool == "arrow"
+    # 选中按钮高亮，其他恢复
+    assert sel._tool_btns["arrow"].configure.call_args is not None

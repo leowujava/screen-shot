@@ -15,8 +15,7 @@ from capture import (
     save_image,
 )
 from editor import Editor
-from selector import RegionSelector
-from annotation import AnnotationWindow
+from selector import Selector
 
 # 全局持有的共享 Tk 根窗口（在 main 的主线程创建）
 _tk_root_holder = {}
@@ -58,35 +57,17 @@ def _safe_copy_to_clipboard(img):
             pass
 
 
-def process_region_selection(full, region):
-    """区域选区结果 → 打开标注窗口。region 为 None 时不做任何事。
+def process_region_selection(region, annotated_img):
+    """选区 + 标注结果 → 打开 Editor。region 为 None 时不做任何事。
 
-    full: 全屏截图（PIL Image）
     region: (left, top, width, height) 虚拟桌面坐标
+    annotated_img: PIL Image（选区 crop + 标注）
     必须在主线程（Tk 主循环所在线程）调用。
     """
-    if region is None:
+    if region is None or annotated_img is None:
         return
     root = _tk_root_holder.get("root")
-
-    def on_confirm(annotated_img):
-        # 标注结果交给 Editor（保留精修/OCR/保存）
-        Editor(annotated_img, on_close=None, root=root).show()
-
-    def on_copy(annotated_img):
-        _safe_copy_to_clipboard(annotated_img)
-
-    def on_save(annotated_img):
-        save_image(annotated_img, None)
-
-    def on_cancel():
-        pass
-
-    AnnotationWindow(
-        full, region,
-        on_confirm, on_copy, on_save, on_cancel,
-        root,
-    ).show()
+    Editor(annotated_img, on_close=None, root=root).show()
 
 
 def _virtual_screen_origin():
@@ -107,14 +88,25 @@ def do_region_capture():
         vsize = capture_virtual_screen_size()
         vx, vy = _virtual_screen_origin()
 
-        def on_select(region):
-            process_region_selection(full, region)
+        def _on_copy(region, annotated_img):
+            if region is None:
+                return
+            _safe_copy_to_clipboard(annotated_img)
+
+        def _on_save(region, annotated_img):
+            if region is None:
+                return
+            save_image(annotated_img, None)
 
         def open_selector():
             # 选区窗口覆盖整个虚拟桌面（所有屏幕）
-            RegionSelector(
+            Selector(
                 x=vx, y=vy, width=vsize[0], height=vsize[1],
-                on_select=on_select, root=_tk_root_holder.get("root"),
+                full_img=full,
+                on_select=lambda region, img: process_region_selection(region, img),
+                on_copy=_on_copy,
+                on_save=_on_save,
+                root=_tk_root_holder.get("root"),
             ).show()
 
         _run_on_main(open_selector)

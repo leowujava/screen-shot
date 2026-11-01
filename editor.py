@@ -1,4 +1,3 @@
-import math
 import sys
 from datetime import datetime
 import tkinter as tk
@@ -6,6 +5,10 @@ from tkinter import ttk, filedialog, colorchooser
 from PIL import Image, ImageDraw, ImageTk
 
 from capture import copy_to_clipboard
+from drawing import (
+    mosaic, UndoStack,
+    draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text,
+)
 
 import json
 import os
@@ -108,44 +111,6 @@ def ocr_result_to_text(result):
         return "\n".join(result[i][1] for i in idx)
 
     return ""
-
-
-class UndoStack:
-    def __init__(self, maxlen=10):
-        self.maxlen = maxlen
-        self._stack = []
-
-    def push(self, item):
-        self._stack.append(item)
-        if len(self._stack) > self.maxlen:
-            self._stack.pop(0)
-
-    def pop(self):
-        if self._stack:
-            return self._stack.pop()
-        return None
-
-    def clear(self):
-        self._stack.clear()
-
-
-def mosaic(img, left, top, right, bottom, block=8):
-    """对 img 的 [left,top,right,bottom] 区域做马赛克，返回新图。
-
-    选区无效（宽或高为 0、越界后无面积）时原样返回副本。
-    """
-    result = img.copy()
-    left, top = max(0, left), max(0, top)
-    right = min(right, result.width)
-    bottom = min(bottom, result.height)
-    if right <= left or bottom <= top:
-        return result
-    region = result.crop((left, top, right, bottom))
-    w, h = region.size
-    small = region.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
-    big = small.resize((w, h), Image.NEAREST)
-    result.paste(big, (left, top))
-    return result
 
 
 class Editor:
@@ -714,8 +679,7 @@ class Editor:
         if self.tool == "ellipse":
             pos = self._ellipse_pos(pos, self._alt_pressed(event))
         if self.tool == "brush":
-            d = ImageDraw.Draw(self.image)
-            d.line([self._brush_last, pos], fill=self.color, width=self.width)
+            draw_brush(self.image, [self._brush_last, pos], self.color, self.width)
             self._brush_last = pos
             self._render()
         else:
@@ -748,12 +712,12 @@ class Editor:
         pos = self._to_img(event.x, event.y)
         if self.tool == "rect":
             self._canvas_delete_preview()
-            d = ImageDraw.Draw(self.image)
             # 规范化坐标（PIL 要求 x1>=x0, y1>=y0，否则拖拽方向反向会报错）
             x0, y0 = self.draw_start
             x1, y1 = pos
-            d.rectangle([min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
-                        outline=self.color, width=self.width)
+            draw_rect(self.image,
+                      [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
+                      self.color, self.width)
             self._render()
             self._sync_clipboard()
         elif self.tool == "ellipse":
@@ -762,12 +726,11 @@ class Editor:
             x1, y1 = self._ellipse_pos(pos, self._alt_pressed(event))
             x0, y0 = self.draw_start
             # 规范化坐标后画椭圆（PIL 要求 x1>=x0, y1>=y0）
-            box = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
-            if box[2] > box[0] and box[3] > box[1]:
-                d = ImageDraw.Draw(self.image)
-                d.ellipse(box, outline=self.color, width=self.width)
-                self._render()
-                self._sync_clipboard()
+            draw_ellipse(self.image,
+                         [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
+                         self.color, self.width)
+            self._render()
+            self._sync_clipboard()
         elif self.tool == "arrow":
             self._canvas_delete_preview()
             self._draw_arrow(self.draw_start, pos)
@@ -819,20 +782,7 @@ class Editor:
             self._preview_id = None
 
     def _draw_arrow(self, start, end):
-        d = ImageDraw.Draw(self.image)
-        x1, y1 = start
-        x2, y2 = end
-        d.line([start, end], fill=self.color, width=self.width)
-        length = math.hypot(x2 - x1, y2 - y1)
-        if length < 1:
-            return
-        angle = math.atan2(y2 - y1, x2 - x1)
-        head = 12
-        a1 = angle + math.pi * 0.8
-        a2 = angle - math.pi * 0.8
-        p1 = (x2 + head * math.cos(a1), y2 + head * math.sin(a1))
-        p2 = (x2 + head * math.cos(a2), y2 + head * math.sin(a2))
-        d.polygon([end, p1, p2], fill=self.color)
+        draw_arrow(self.image, start, end, self.color, self.width)
 
     def _input_text(self, x, y):
         top = tk.Toplevel(self.root)
@@ -848,8 +798,7 @@ class Editor:
             text = entry.get()
             if text:
                 self._push_undo()
-                d = ImageDraw.Draw(self.image)
-                d.text((x, y), text, fill=self.color)
+                draw_text(self.image, (x, y), text, self.color, 12)
                 self._render()
                 self._sync_clipboard()
             top.destroy()

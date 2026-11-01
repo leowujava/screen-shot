@@ -13,3 +13,6 @@ out/
 # 测试缓存与临时文件
 .pytest_cache/
 _tb_check.png
+
+# worktrees
+.worktrees/

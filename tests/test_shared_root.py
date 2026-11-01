@@ -7,13 +7,13 @@ PhotoImage，全程只销毁 Toplevel、不销毁解释器，应无异常。
 import tkinter as tk
 from PIL import Image, ImageTk
 
-from selector import RegionSelector
+from selector import Selector
 
 
 def test_shared_root_flow_no_tclerror():
     results = {}
 
-    def on_select(region):
+    def on_select(region, annotated_img):
         assert region is None  # 走取消路径（Esc），不依赖真实拖拽
         # 模拟 app.py：在共享根上打开编辑器
         ed = tk.Toplevel(shared)
@@ -28,8 +28,12 @@ def test_shared_root_flow_no_tclerror():
     shared = tk.Tk()
     shared.withdraw()
 
-    sel = RegionSelector(x=0, y=0, width=400, height=300,
-                         on_select=on_select, root=shared)
+    sel = Selector(x=0, y=0, width=400, height=300,
+                   full_img=None,
+                   on_select=on_select,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None,
+                   root=shared)
     # 非阻塞：show() 应直接返回
     sel.show()
 

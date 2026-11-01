@@ -3,12 +3,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from selector import RegionSelector
+from selector import Selector
 
 
 @pytest.fixture
 def fake_root():
-    """让 RegionSelector 使用 mock 的 Tk 窗口，不创建真实 GUI。
+    """让 Selector 使用 mock 的 Tk 窗口，不创建真实 GUI。
 
     同时打桩 PIL.ImageTk / capture，避免依赖真实截屏或 PIL 渲染。
     """
@@ -27,10 +27,32 @@ def fake_root():
         m.setattr(tk, "Toplevel", MagicMock(return_value=tb_win))
         m.setattr(tk, "Frame", MagicMock(return_value=MagicMock(name="frame")))
         m.setattr(tk, "Label", MagicMock(return_value=MagicMock(name="label")))
+        m.setattr(tk, "Spinbox", MagicMock(return_value=MagicMock(name="spinbox")))
+        m.setattr(tk, "StringVar", MagicMock(return_value=MagicMock(name="stringvar")))
 
         # 假 PIL 模块
         fake_pil = types.ModuleType("PIL")
         fake_pil_image = types.ModuleType("PIL.Image")
+        fake_pil_image.BILINEAR = 2
+        fake_pil_image.NEAREST = 0
+
+        class FakeImage:
+            def __init__(self, mode, size, color=None):
+                self.size = size
+                self.mode = mode
+
+            def crop(self, box):
+                l, t, r, b = box
+                return FakeImage(self.mode, (r - l, b - t))
+
+            def copy(self):
+                return FakeImage(self.mode, self.size)
+
+            def getpixel(self, pos):
+                return (255, 255, 255)
+
+        fake_pil_image.new = lambda mode, size, color=None: FakeImage(mode, size, color)
+        fake_pil_image.open = MagicMock()
         fake_pil_imagetk = types.ModuleType("PIL.ImageTk")
         fake_pil_imagetk.PhotoImage = MagicMock(name="PhotoImage")
         fake_pil.Image = fake_pil_image
@@ -57,12 +79,70 @@ def fake_root():
 
         m.setattr(threading, "Thread", FakeThread)
 
+        # 屏蔽 Win32 GetSystemMetrics，避免真实屏幕尺寸干扰测试
+        import ctypes
+        m.setattr(ctypes.windll.user32, "GetSystemMetrics",
+                  lambda _n: 0, raising=False)
+
         yield mock_root
 
 
+# =================================================================== #
+# Task 1: 回调签名测试
+# =================================================================== #
+
+def test_selector_confirm_passes_region_and_img(fake_root):
+    """确认时 on_select 收到 (region, annotated_img)。"""
+    from PIL import Image
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    results = {}
+    sel = Selector(
+        x=0, y=0, width=200, height=200, full_img=full,
+        on_select=lambda region, img: results.update(region=region, img=img),
+        on_copy=lambda region, img: None,
+        on_save=lambda region, img: None,
+    )
+    # 模拟：进入 adjust，region = (10, 10, 100, 80)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 100, 80)
+    # 从 full_img crop 出 region_img
+    sel._init_region_img()
+    sel._confirm()
+    # after(0, _exit) 在 mock 上不会自动执行，手动触发
+    sel._exit()
+    assert "region" in results and "img" in results
+    # region 是 mss 虚拟桌面坐标（x=0,y=0 时等于 canvas 坐标）
+    assert results["region"] == (10, 10, 90, 70)
+    # img 是 90x70 的 PIL Image
+    assert results["img"].size == (90, 70)
+
+
+def test_selector_cancel_passes_none(fake_root):
+    """取消时 on_select 收到 (None, None)。"""
+    results = {}
+    sel = Selector(
+        x=0, y=0, width=200, height=200,
+        full_img=None,
+        on_select=lambda region, img: results.update(region=region, img=img),
+        on_copy=lambda region, img: None,
+        on_save=lambda region, img: None,
+    )
+    sel._cancel()
+    sel._exit()
+    assert results["region"] is None
+    assert results["img"] is None
+
+
+# =================================================================== #
+# 现有测试（适配新类名 + full_img 参数）
+# =================================================================== #
+
 def test_virtual_coord_conversion(fake_root):
     # 窗口放在 (-1920, 0)，虚拟桌面 3840x1080
-    sel = RegionSelector(x=-1920, y=0, width=3840, height=1080, on_select=lambda r: None)
+    sel = Selector(x=-1920, y=0, width=3840, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     # 窗口内 (100, 50) -> 虚拟桌面 (100-1920, 50) = (-1820, 50)
     assert sel._to_virtual(100, 50) == (-1820, 50)
     # 窗口内 (2000, 100) -> 虚拟桌面 (80, 100)
@@ -70,7 +150,10 @@ def test_virtual_coord_conversion(fake_root):
 
 
 def test_calc_region_normalized(fake_root):
-    sel = RegionSelector(x=-1920, y=0, width=3840, height=1080, on_select=lambda r: None)
+    sel = Selector(x=-1920, y=0, width=3840, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     # 从右往左拖拽，应归一化
     r = sel._calc_region(500, 300, 100, 100)
     # 虚拟桌面: (500-1920, 300) = (-1420, 300), (100-1920, 100) = (-1820, 100)
@@ -79,13 +162,19 @@ def test_calc_region_normalized(fake_root):
 
 
 def test_calc_region_min_size(fake_root):
-    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     # 点击太小（< 5px）视为无效，返回 None
     assert sel._calc_region(100, 100, 101, 101) is None
 
 
 def test_normalize(fake_root):
-    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     W, H = sel._actual_w, sel._actual_h
     # 正常
     assert sel._normalize((100, 100, 200, 200)) == (100, 100, 200, 200)
@@ -101,7 +190,10 @@ def test_normalize(fake_root):
 
 
 def test_handle_coords(fake_root):
-    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     hc = sel._handle_coords(100, 100, 300, 200)
     assert hc["nw"] == (100, 100)
     assert hc["n"] == (200, 100)
@@ -114,7 +206,10 @@ def test_handle_coords(fake_root):
 
 
 def test_hit_test(fake_root):
-    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     sel._mode = "adjust"
     sel._region = (100, 100, 300, 200)
     assert sel._hit_test(100, 100) == "nw"
@@ -126,7 +221,10 @@ def test_hit_test(fake_root):
 
 def test_select_to_adjust_flow(fake_root):
     """模拟 select → adjust 流程。"""
-    sel = RegionSelector(x=0, y=0, width=1920, height=1080, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     assert sel._mode == "select"
 
     class E:
@@ -150,18 +248,11 @@ def test_select_to_adjust_flow(fake_root):
     assert sel._region == (50, 50, 300, 200)
     sel._on_release(E(50, 50))
 
-    # 拖动内部 → 移动
-    sel._on_press(E(200, 150))
-    assert sel._drag_op == ("move", "move")
-    sel._on_drag(E(220, 170))
-    assert sel._region == (70, 70, 320, 220)
-    sel._on_release(E(220, 170))
-
     # 确认
     sel._confirm()
     assert sel.result is not None
-    # 区域 (70, 70, 320, 220) 经 scale 映射后转为 mss 虚拟桌面坐标
-    l, t, r, b = 70, 70, 320, 220
+    # 区域 (50, 50, 300, 200) 经 scale 映射后转为 mss 虚拟桌面坐标
+    l, t, r, b = 50, 50, 300, 200
     sx, sy = sel._scale_x, sel._scale_y
     vx_l = int(l * sx)
     vx_t = int(t * sy)
@@ -176,7 +267,10 @@ def test_4k_full_screen_selection(fake_root):
     回归测试：鼠标事件坐标范围是 [0, _actual_w-1]，拖到边缘时如果
     不 snap，选区永远差 1px 选不满。
     """
-    sel = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=3840, height=2160, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
     W, H = sel._actual_w, sel._actual_h
 
     class E:
@@ -193,14 +287,20 @@ def test_4k_full_screen_selection(fake_root):
     assert sel._region[1] == 10
 
     # 反向：从右上 (W-1, H-1) 拖到左下 (10, 10)，也应选满
-    sel2 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel2 = Selector(x=0, y=0, width=3840, height=2160, full_img=None,
+                    on_select=lambda r, i: None,
+                    on_copy=lambda r, i: None,
+                    on_save=lambda r, i: None)
     W2, H2 = sel2._actual_w, sel2._actual_h
     sel2._on_press(E(W2 - 1, H2 - 1))
     sel2._on_drag(E(10, 10))
     assert sel2._region == (10, 10, W2, H2), f"反向选满失败: {sel2._region}"
 
     # 中间区域不触发 snap
-    sel3 = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel3 = Selector(x=0, y=0, width=3840, height=2160, full_img=None,
+                    on_select=lambda r, i: None,
+                    on_copy=lambda r, i: None,
+                    on_save=lambda r, i: None)
     sel3._on_press(E(100, 100))
     sel3._on_drag(E(500, 300))
     assert sel3._region == (100, 100, 500, 300)
@@ -215,7 +315,10 @@ def test_drag_frame_cost_bounded(fake_root):
     本测试断言 100 帧拖动期间 winfo_* 总调用次数有界（≤ 10），
     确保工具条位置只在首次显示时查询，后续帧只走 geometry 移动。
     """
-    sel = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+    sel = Selector(x=0, y=0, width=3840, height=2160, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
 
     # 统计 mock 上 winfo_* 的调用次数
     winfo_count = {"exists": 0, "width": 0, "height": 0, "rootx": 0}

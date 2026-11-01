@@ -115,12 +115,9 @@ class Selector:
         if self._owns_root:
             self.root = tk.Tk()
             self.root.title("")
-            self._tb_parent = self.root
         else:
             self.root = tk.Toplevel(root)
             self.root.title("")
-            # 工具条挂在共享根上（不是覆盖层），避免 overrideredirect 子窗口 z-order 问题
-            self._tb_parent = root
 
         # 动态计算实际屏幕大小（虚拟桌面）
         self._actual_w, self._actual_h = self._get_screen_size()
@@ -204,9 +201,10 @@ class Selector:
     # ------------------------------------------------------------------ #
 
     def _build_toolbar(self):
-        self.tb_win = tk.Toplevel(self._tb_parent)
+        self.tb_win = tk.Toplevel(self.root)
         self.tb_win.wm_overrideredirect(True)
         self.tb_win.wm_attributes("-topmost", True)
+        self.tb_win.attributes("-alpha", 1.0)
         self.tb_win.configure(bg=TB_BG, bd=1, relief="solid")
         self.tb_win.withdraw()
 

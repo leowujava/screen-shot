@@ -110,12 +110,16 @@ class Selector:
         self._region_photo = None
         self._mask_photos = []
 
+        self._shared_root = root
         if self._owns_root:
             self.root = tk.Tk()
             self.root.title("")
+            self._tb_parent = self.root
         else:
             self.root = tk.Toplevel(root)
             self.root.title("")
+            # 工具条挂在共享根上（不是覆盖层），避免 overrideredirect 子窗口 z-order 问题
+            self._tb_parent = root
 
         # 动态计算实际屏幕大小（虚拟桌面）
         self._actual_w, self._actual_h = self._get_screen_size()
@@ -123,14 +127,15 @@ class Selector:
         self._scale_y = height / self._actual_h if self._actual_h else 1.0
 
         self.root.geometry(f"{self._actual_w}x{self._actual_h}+{x}+{y}")
-        self.root.configure(bg="#1e1e2e")
+        self.root.configure(bg="black")
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
+        self.root.attributes("-alpha", 0.5)
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
         self.root.update_idletasks()
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
 
-        self.canvas = tk.Canvas(self.root, bg="#1e1e2e", highlightthickness=0,
+        self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
@@ -198,8 +203,9 @@ class Selector:
     # ------------------------------------------------------------------ #
 
     def _build_toolbar(self):
-        self.tb_win = tk.Toplevel(self.root)
+        self.tb_win = tk.Toplevel(self._tb_parent)
         self.tb_win.wm_overrideredirect(True)
+        self.tb_win.wm_attributes("-topmost", True)
         self.tb_win.configure(bg=TB_BG, bd=1, relief="solid")
         self.tb_win.withdraw()
 

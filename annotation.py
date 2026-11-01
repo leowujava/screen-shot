@@ -234,6 +234,8 @@ class AnnotationWindow:
             (0, b, l, H),
             (r, b, W, H),
         ]
+        # 每帧重建：先清空旧引用，再创建新 PhotoImage（防止内存泄漏）
+        self._mask_photos = []
         for i, (zx0, zy0, zx1, zy1) in enumerate(zones):
             key = f"mask{i + 1}"
             zw, zh = zx1 - zx0, zy1 - zy0

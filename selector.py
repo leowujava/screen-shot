@@ -753,12 +753,17 @@ class Selector:
         if getattr(self, "_dragging_box", False):
             self._dragging_box = False
             self._clear_lightweight()
+            if self._region is None:
+                self._mode = "select"
+                self._render_all()
+                return
+            # 画框完成：完整渲染（背景 + PIL 遮罩 + 选区图 + 手柄）
+            self._render_all()
+            return
         if self._region is None:
             self._mode = "select"
             self._render_all()
             return
-        # 切换到完整渲染（背景 + PIL 遮罩 + 选区图 + 手柄）
-        self._render_all()
         if not self.drawing or self._region_img is None:
             return
         self.drawing = False
@@ -807,8 +812,9 @@ class Selector:
             self._preview_id = self.canvas.create_oval(
                 px0, py0, px1, py1, outline=self.color, width=self.width_attr)
         elif self.tool == "arrow":
+            # 箭头用实际起止点（不 clamp 到 bounding box），保证方向正确
             self._preview_id = self.canvas.create_line(
-                px0, py0, px1, py1, fill=self.color, width=self.width_attr,
+                x0, y0, x1, y1, fill=self.color, width=self.width_attr,
                 arrow="last")
         elif self.tool == "mosaic":
             self._preview_id = self.canvas.create_rectangle(

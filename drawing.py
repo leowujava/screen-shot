@@ -72,12 +72,7 @@ def draw_rect(img, box, color, width):
 
 
 def draw_ellipse(img, box, color, width):
-    """在 img 上画 outline 椭圆。box 已归一化 (x0, y0, x1, y1)。
-
-    无面积的 box（宽高为 0）不画。
-    """
-    if box[2] <= box[0] or box[3] <= box[1]:
-        return
+    """在 img 上画 outline 椭圆。box 已归一化 (x0, y0, x1, y1)。"""
     d = ImageDraw.Draw(img)
     d.ellipse(box, outline=color, width=width)
 

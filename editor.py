@@ -725,12 +725,13 @@ class Editor:
             # 按住 Alt 时约束为正圆（与拖拽预览保持一致）
             x1, y1 = self._ellipse_pos(pos, self._alt_pressed(event))
             x0, y0 = self.draw_start
-            # 规范化坐标后画椭圆（PIL 要求 x1>=x0, y1>=y0）
-            draw_ellipse(self.image,
-                         [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)],
-                         self.color, self.width)
-            self._render()
-            self._sync_clipboard()
+            # 规范化坐标后画椭圆（PIL 要求 x1>=x0, y1>=y0），
+            # 跳过无面积的选区（单击或水平/垂直拖拽）
+            box = [min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)]
+            if box[2] > box[0] and box[3] > box[1]:
+                draw_ellipse(self.image, box, self.color, self.width)
+                self._render()
+                self._sync_clipboard()
         elif self.tool == "arrow":
             self._canvas_delete_preview()
             self._draw_arrow(self.draw_start, pos)

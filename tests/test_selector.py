@@ -548,3 +548,41 @@ def test_render_all_in_select_mode_no_masks(fake_root):
     # select 模式不画遮罩
     for i in range(1, 5):
         assert f"mask{i}" not in sel._items, f"select 模式不应有 mask{i}"
+
+
+# =================================================================== #
+# Task 5: 工具条启用/禁用测试
+# =================================================================== #
+
+def test_toolbar_disabled_in_select_mode(fake_root):
+    """select 模式下工具按钮应灰色禁用。"""
+    from selector import TB_SEP
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    assert sel._mode == "select"
+    # 构造后应处于禁用状态
+    for tool, b in sel._tool_btns.items():
+        calls = [c for c in b.configure.call_args_list
+                 if c.kwargs.get("fg") == TB_SEP]
+        assert calls, f"工具 {tool} 在 select 模式未禁用（fg 不是灰色）"
+
+
+def test_toolbar_enabled_in_adjust_mode(fake_root):
+    """进入 adjust 模式后工具按钮应启用（fg 恢复 TB_FG）。"""
+    from selector import TB_FG
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    # 模拟进入 adjust
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(100, 100))
+    assert sel._mode == "adjust"
+    # 启用后至少有一次 configure(fg=TB_FG)
+    for tool, b in sel._tool_btns.items():
+        calls = [c for c in b.configure.call_args_list
+                 if c.kwargs.get("fg") == TB_FG]
+        assert calls, f"工具 {tool} 在 adjust 模式未启用（fg 不是正常色）"

@@ -204,3 +204,64 @@ def test_4k_full_screen_selection(fake_root):
     sel3._on_press(E(100, 100))
     sel3._on_drag(E(500, 300))
     assert sel3._region == (100, 100, 500, 300)
+
+
+def test_drag_frame_cost_bounded(fake_root):
+    """每帧拖动调用的 winfo_* 次数必须有界。
+
+    回归测试：winfo_exists / winfo_width / winfo_height 每次调用都是一次
+    同步 Tcl 往返 + 强制 layout 计算。在 5760x2160 虚拟桌面上，每次
+    B1-Motion 都触发 _tb_show → 多次 winfo，是拖动卡顿的主要根因。
+    本测试断言 100 帧拖动期间 winfo_* 总调用次数有界（≤ 10），
+    确保工具条位置只在首次显示时查询，后续帧只走 geometry 移动。
+    """
+    sel = RegionSelector(x=0, y=0, width=3840, height=2160, on_select=lambda r: None)
+
+    # 统计 mock 上 winfo_* 的调用次数
+    winfo_count = {"exists": 0, "width": 0, "height": 0, "rootx": 0}
+    tb_win = sel.tb_win
+
+    orig_exists = tb_win.winfo_exists
+    orig_width = tb_win.winfo_width
+    orig_height = tb_win.winfo_height
+
+    def count_exists(*a, **kw):
+        winfo_count["exists"] += 1
+        return orig_exists(*a, **kw)
+
+    def count_width(*a, **kw):
+        winfo_count["width"] += 1
+        return orig_width(*a, **kw)
+
+    def count_height(*a, **kw):
+        winfo_count["height"] += 1
+        return orig_height(*a, **kw)
+
+    tb_win.winfo_exists = count_exists
+    tb_win.winfo_width = count_width
+    tb_win.winfo_height = count_height
+
+    class E:
+        def __init__(self):
+            self.x = 0
+            self.y = 0
+
+    # 模拟 100 帧拖动
+    for i in range(100):
+        x = 100 + i
+        y = 200 + (i // 2)
+        ev = E()
+        ev.x, ev.y = x, y
+        if i == 0:
+            sel._on_press(ev)
+        else:
+            sel._on_drag(ev)
+
+    # 100 帧拖动，winfo_exists 应该只调 ~1 次（首次显示时）
+    # winfo_width / winfo_height 应该只调 ~1 次（首次显示时，之后缓存）
+    # 总计 winfo 调用次数应 ≤ 10
+    total_winfo = sum(winfo_count.values())
+    assert total_winfo <= 10, (
+        f"100 帧拖动 winfo 总调用 {total_winfo} 次（{winfo_count}），"
+        f"超出预期上限 10，工具条布局计算未优化"
+    )

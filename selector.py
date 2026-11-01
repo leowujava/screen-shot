@@ -64,7 +64,10 @@ class RegionSelector:
         self._crosshair_v = None  # 十字准星垂直线
         self._crosshair_label = None  # 十字准星尺寸标签
         self._crosshair_label_bg = None
+        self._crosshair_label_size = None  # 十字准星标签 bbox 缓存（首次查询后复用）
         self._bg_photo = None    # 背景截图（用于暗化效果）
+        self._tb_visible = False  # 工具条是否已显示
+        self._tb_size = None      # 工具条尺寸缓存（首次显示时查询）
 
         if self._owns_root:
             self.root = tk.Tk()
@@ -84,13 +87,21 @@ class RegionSelector:
         self._scale_y = height / self._actual_h if self._actual_h else 1.0
 
         self.root.geometry(f"{self._actual_w}x{self._actual_h}+{x}+{y}")
-        self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
         # 置顶 + 无边框
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
         # 半透明：让屏幕内容透出来，不定格画面
         self.root.attributes("-alpha", 0.5)
+        # Win32 强制扩展窗口到完整虚拟桌面（绕过 Tk 的主显示器钳制）。
+        # 必须在 geometry / overrideredirect 之后调用，否则会被 Tk 的
+        # configure 流程盖回主显示器尺寸。
+        self._force_fullscreen(x, y, self._actual_w, self._actual_h)
+        # 再调一次 SetWindowPos 兜底：Tk 后续可能再发 configure 把窗口
+        # 钳回主显示器（特别是 -topmost 触发 WS_EX_TOPMOST 后），用
+        # 空事件循环 + 再次 SetWindowPos 确保窗口尺寸稳定。
+        self.root.update_idletasks()
+        self._force_fullscreen(x, y, self._actual_w, self._actual_h)
 
         # 画布：铺满整个覆盖层，底色为黑色（半透明后呈现暗化效果）
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
@@ -142,6 +153,30 @@ class RegionSelector:
             pass
         return self.width, self.height
 
+    def _force_fullscreen(self, x, y, width, height):
+        """用 Win32 强制把窗口扩展到完整虚拟桌面尺寸。
+
+        Tk 在 Windows 下会把窗口钳制到主显示器，直接 geometry 设更大
+        尺寸无效。这里用 SetWindowPos 设精确尺寸，不传 SWP_FRAMECHANGED
+        （会触发 Windows 对 WS_POPUP 窗口的钳制），直接 SetWindowPos
+        把窗口摆到虚拟桌面 (x, y) 处、尺寸 (width, height)。
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            hwnd = wintypes.HWND(self.root.winfo_id())
+            # HWND_TOPMOST：保持顶层，覆盖全屏
+            user32.SetWindowPos(
+                hwnd, wintypes.HWND(-1),
+                x, y, width, height,
+                0,  # 不传 SWP_FRAMECHANGED / SWP_NOZORDER
+            )
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ #
     # 工具条
     # ------------------------------------------------------------------ #
@@ -175,21 +210,26 @@ class RegionSelector:
         b.bind("<Button-1>", lambda e, c=command: c())
         return b
 
-    _tb_visible = False
-
     def _tb_show(self, pos, size):
-        """在选区下方显示工具条，pos/size 为画布坐标的选区矩形。"""
-        if not self.tb_win.winfo_exists():
-            return
-        x, y = pos[0], pos[1]
-        w, h = size[2], size[3]
+        """在选区下方显示工具条，pos/size 为画布坐标的选区矩形。
+
+        拖动中每帧调用，必须避免触发 Tcl 布局计算：
+        - winfo_exists / winfo_width / winfo_height 只在首次显示时查询一次，
+          之后缓存到 _tb_size（工具条尺寸在选区过程中不变）。
+        - 后续帧只走 geometry 移动（纯 SetWindowPos，无 layout）。
+        """
         if not self._tb_visible:
+            if not self.tb_win.winfo_exists():
+                return
             self.tb_win.deiconify()
             self.tb_win.update_idletasks()
             self._tb_visible = True
+            # 只在首次显示时查询尺寸，之后复用缓存
+            self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
+        x, y = pos[0], pos[1]
+        w, h = size[2], size[3]
         self.tb_label.configure(text=f"{w} x {h}")
-        tb_w = self.tb_win.winfo_width()
-        tb_h = self.tb_win.winfo_height()
+        tb_w, tb_h = self._tb_size
         # 默认放选区下方；放不下时放上方（用 Tk 屏幕尺寸判断边界）
         W, H = self._actual_w, self._actual_h
         ty = y + h + 4
@@ -202,6 +242,8 @@ class RegionSelector:
 
     def _tb_hide(self):
         self._tb_visible = False
+        # 清空缓存，下次显示时重新查询尺寸
+        self._tb_size = None
         if self.tb_win is not None and self.tb_win.winfo_exists():
             try:
                 self.tb_win.withdraw()
@@ -254,13 +296,23 @@ class RegionSelector:
             self.canvas.coords(self._crosshair_label, lx, ly)
             self.canvas.itemconfig(self._crosshair_label, text=text)
             if self._crosshair_label_bg:
-                try:
-                    bbox = tuple(self.canvas.bbox(self._crosshair_label))
-                except (TypeError, ValueError, tk.TclError):
-                    bbox = None
-                if bbox:
-                    x1, y1, x2, y2 = bbox
-                    self.canvas.coords(self._crosshair_label_bg, x1-4, y1-2, x2+4, y2+2)
+                # 用缓存的 bbox 尺寸（文本宽度变化时近似足够），避免每帧
+                # bbox() 触发 Tcl 布局计算。文本宽度变化时误差可接受。
+                size = self._crosshair_label_size
+                if size is None:
+                    try:
+                        bbox = tuple(self.canvas.bbox(self._crosshair_label))
+                        x1, y1, x2, y2 = bbox
+                        self._crosshair_label_size = (x2 - x1, y2 - y1)
+                        size = self._crosshair_label_size
+                    except (TypeError, ValueError, tk.TclError):
+                        size = None
+                if size:
+                    tw, th = size
+                    self.canvas.coords(
+                        self._crosshair_label_bg,
+                        lx - 4, ly - 2, lx + tw + 4, ly + th + 2,
+                    )
 
     def _hide_crosshair(self):
         """隐藏十字准星。"""
@@ -272,6 +324,8 @@ class RegionSelector:
                 except tk.TclError:
                     pass
                 setattr(self, attr, None)
+        # 清空 bbox 缓存，下次显示时重新查询
+        self._crosshair_label_size = None
 
     # ------------------------------------------------------------------ #
     # 渲染
@@ -326,6 +380,7 @@ class RegionSelector:
                 self._items["label_bg"] = self.canvas.create_rectangle(
                     x1 - 4, y1 - 2, x2 + 4, y2 + 2,
                     fill=LABEL_BG, outline="", width=0)
+                self._items["label_bg_size"] = (x2 - x1, y2 - y1)
                 self.canvas.tag_raise(tid)
             self._items["label"] = tid
         else:
@@ -333,13 +388,14 @@ class RegionSelector:
             self.canvas.coords(tid, tx, ty)
             self.canvas.itemconfig(tid, text=text)
             if "label_bg" in self._items:
-                try:
-                    bbox = tuple(self.canvas.bbox(tid))
-                except (TypeError, ValueError, tk.TclError):
-                    bbox = None
-                if bbox:
-                    x1, y1, x2, y2 = bbox
-                    self.canvas.coords(self._items["label_bg"], x1-4, y1-2, x2+4, y2+2)
+                # 用缓存的 bbox 尺寸，避免每帧 bbox() 触发 Tcl 布局计算
+                size = self._items.get("label_bg_size")
+                if size:
+                    tw, th = size
+                    self.canvas.coords(
+                        self._items["label_bg"],
+                        tx - 4, ty - 2, tx + tw + 4, ty + th + 2,
+                    )
 
         # 手柄
         if "handles" not in self._items:
@@ -351,11 +407,21 @@ class RegionSelector:
                     fill="#ffffff", outline=TB_BG, width=1)
             self._items["handles"] = handles
         else:
-            for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
-                s = self.HANDLE_SIZE
-                self.canvas.coords(
-                    self._items["handles"][name],
-                    hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s)
+            # 手柄中心相对选区角落是固定偏移（nw=0,0 / n=mid,0 / ...），
+            # 用 dx/dy 移动避免重建 _handle_coords 字典（虽然开销小，
+            # 但 8 次 dict lookup + 8 次 coords 调用可优化）。
+            s = self.HANDLE_SIZE
+            h = self._items["handles"]
+            mid_x = (l + r) // 2
+            mid_y = (t + b) // 2
+            self.canvas.coords(h["nw"], l - s, t - s, l + s, t + s)
+            self.canvas.coords(h["n"], mid_x - s, t - s, mid_x + s, t + s)
+            self.canvas.coords(h["ne"], r - s, t - s, r + s, t + s)
+            self.canvas.coords(h["e"], r - s, mid_y - s, r + s, mid_y + s)
+            self.canvas.coords(h["se"], r - s, b - s, r + s, b + s)
+            self.canvas.coords(h["s"], mid_x - s, b - s, mid_x + s, b + s)
+            self.canvas.coords(h["sw"], l - s, b - s, l + s, b + s)
+            self.canvas.coords(h["w"], l - s, mid_y - s, l + s, mid_y + s)
 
         # 显示工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))

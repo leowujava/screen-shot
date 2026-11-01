@@ -274,6 +274,7 @@ class Selector:
             if not self.tb_win.winfo_exists():
                 return
             self.tb_win.deiconify()
+            self.tb_win.wm_attributes("-topmost", True)
             self.tb_win.update_idletasks()
             self._tb_visible = True
             self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
@@ -843,6 +844,10 @@ class Selector:
 
     def _select_tool(self, name):
         self.tool = name
+        # 确保工具条保持在最前（防止被覆盖层遮挡）
+        if self.tb_win is not None and self.tb_win.winfo_exists():
+            self.tb_win.wm_attributes("-topmost", True)
+            self.tb_win.lift()
         for tool, b in self._tool_btns.items():
             if tool == name:
                 b.configure(bg=TB_HOVER, fg=TB_HOVER_FG)
@@ -925,15 +930,19 @@ class Selector:
         if self._owns_root:
             try:
                 self.root.destroy()
-                self.tb_win.destroy()
             except tk.TclError:
                 pass
         else:
             try:
                 self.root.withdraw()
-                self.tb_win.withdraw()
             except tk.TclError:
                 pass
+        # 销毁工具条（选择完成后彻底关闭）
+        try:
+            self.tb_win.destroy()
+        except tk.TclError:
+            pass
+        self.tb_win = None
         # 清理画布
         for item in self._items.values():
             if isinstance(item, dict):

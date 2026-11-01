@@ -109,6 +109,7 @@ class Selector:
         self._region_img = None
         self._region_photo = None
         self._mask_photos = []
+        self._dragging_box = False
 
         self._shared_root = root
         if self._owns_root:
@@ -383,11 +384,21 @@ class Selector:
     # ------------------------------------------------------------------ #
 
     def _render_all(self):
-        """渲染/更新全部。select 模式只画十字准星；adjust 模式画背景+遮罩+选区+边框+手柄+工具条。"""
+        """渲染/更新全部。select 模式只画十字准星；adjust 模式画背景+遮罩+选区+边框+手柄+工具条。
+
+        画框阶段（_dragging_box=True）用轻量 Tk stipple 矩形（与旧 RegionSelector 一致），
+        避免每帧创建 4 张 PIL RGBA + PhotoImage（5760x1440 下每帧 ~23MB 分配）。
+        松开鼠标后切换到完整渲染（背景 + PIL 遮罩 + 选区图）。
+        """
         if self._mode != "adjust" or self._region is None:
             return
         l, t, r, b = self._region
         W, H = self._actual_w, self._actual_h
+
+        if getattr(self, "_dragging_box", False):
+            # 画框阶段：轻量 stipple 矩形（无 PIL）
+            self._render_lightweight(l, t, r, b)
+            return
 
         # 背景（full_img 只贴一次）
         if "bg" not in self._items and self.full_img is not None:
@@ -414,6 +425,34 @@ class Selector:
 
         # 工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
+
+    def _render_lightweight(self, l, t, r, b):
+        """画框阶段：用 Tk stipple 矩形做暗化（无 PIL 开销）。"""
+        W, H = self._actual_w, self._actual_h
+        # 4 块 stipple 暗化
+        if "m1" not in self._items:
+            self._items["m1"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m2"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m3"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["m4"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
+            self._items["rect"] = self.canvas.create_rectangle(0, 0, 0, 0, outline="white", width=2)
+        self.canvas.coords(self._items["m1"], 0, 0, l, t)
+        self.canvas.coords(self._items["m2"], r, 0, W, t)
+        self.canvas.coords(self._items["m3"], 0, b, l, H)
+        self.canvas.coords(self._items["m4"], r, b, W, H)
+        self.canvas.coords(self._items["rect"], l, t, r, b)
+        # 工具条
+        self._tb_show((l, t, r, b), (l, t, r - l, b - t))
+
+    def _clear_lightweight(self):
+        """清理画框阶段的 stipple 矩形，为完整渲染做准备。"""
+        for key in ("m1", "m2", "m3", "m4", "rect"):
+            if key in self._items:
+                try:
+                    self.canvas.delete(self._items[key])
+                except tk.TclError:
+                    pass
+                del self._items[key]
 
     def _render_masks(self, l, t, r, b):
         """重建 4 块半透明暗化遮罩（选区外）。"""
@@ -574,6 +613,7 @@ class Selector:
             # 按下立刻创建最小框并进入 adjust 模式
             self.start = (event.x, event.y)
             self._mode = "adjust"
+            self._dragging_box = True
             x, y = event.x, event.y
             W, H = self._actual_w, self._actual_h
             x = max(0, min(x, W - 1))
@@ -681,9 +721,16 @@ class Selector:
         self._drag_region = None
         self.canvas.configure(cursor="crosshair")
         self._hide_crosshair()
+        # 画框结束：清理轻量渲染，切换到完整渲染
+        if getattr(self, "_dragging_box", False):
+            self._dragging_box = False
+            self._clear_lightweight()
         if self._region is None:
             self._mode = "select"
             self._render_all()
+            return
+        # 切换到完整渲染（背景 + PIL 遮罩 + 选区图 + 手柄）
+        self._render_all()
         if not self.drawing or self._region_img is None:
             return
         self.drawing = False

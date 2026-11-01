@@ -231,10 +231,10 @@ class Selector:
 
         # 粗细
         self._width_var = tk.StringVar(master=self.root, value="3")
-        spin = tk.Spinbox(self.tb_win, from_=1, to=30, width=3,
+        spin = tk.Spinbox(bar, from_=1, to=30, width=3,
                           textvariable=self._width_var, font=TB_FONT,
                           bg=TB_BG, fg=TB_FG, bd=0, relief="flat")
-        spin.pack(side="left", padx=2, in_=bar)
+        spin.pack(side="left", padx=2)
         spin.bind("<FocusOut>", lambda e: self._on_width_change())
         spin.bind("<Return>", lambda e: self._on_width_change())
 

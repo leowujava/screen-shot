@@ -1,3 +1,4 @@
+import sys
 import tkinter as tk
 
 # 选区完成回调常量
@@ -74,8 +75,12 @@ class RegionSelector:
             self.root.title("")
 
         # 直接用传入的 width/height 设置窗口大小。
-        # app.py 传入的是主显示器的 mss 尺寸，与 capture_region 的坐标系一致。
-        # 窗口位置 (x, y) 是主显示器在虚拟桌面中的左上角。
+        # app.py 传入的是虚拟桌面（所有屏幕合并）的 mss 尺寸。
+        # 窗口位置 (x, y) 是虚拟桌面左上角在屏幕坐标中的位置（通常为 0,0）。
+        #
+        # 注意：Tk 的 geometry 会把窗口夹到主显示器范围内，无法覆盖多屏。
+        # 因此创建窗口后，用 Win32 SetWindowPos 强制把窗口扩展到
+        # 完整的虚拟桌面尺寸，确保遮罩层覆盖所有屏幕。
         self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
@@ -84,6 +89,9 @@ class RegionSelector:
         self.root.wm_overrideredirect(True)
         # 半透明：让屏幕内容透出来，不定格画面
         self.root.attributes("-alpha", 0.5)
+
+        # Win32 强制扩展窗口到完整虚拟桌面（绕过 Tk 的主显示器钳制）
+        self._force_window_size(x, y, width, height)
 
         # 画布：铺满整个覆盖层，底色为黑色（半透明后呈现暗化效果）
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
@@ -105,6 +113,37 @@ class RegionSelector:
 
         self.root.focus_force()
         self._finished = False
+
+    # ------------------------------------------------------------------ #
+    # Win32 窗口扩展
+    # ------------------------------------------------------------------ #
+
+    def _force_window_size(self, x, y, width, height):
+        """用 Win32 SetWindowPos 强制把窗口扩展到完整虚拟桌面尺寸。
+
+        Tk 的 geometry 会把窗口夹到主显示器范围内，多屏时无法覆盖
+        整个虚拟桌面。这里直接操作 Win32 窗口句柄，绕过 Tk 的钳制。
+        """
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            # 获取 Tk 窗口的 Win32 句柄
+            hwnd = self.root.winfo_id()
+            hwnd = wintypes.HWND(hwnd)
+            # SWP_NOZORDER: 不改变 Z 序
+            SWP_NOZORDER = 0x0004
+            # 用 SetWindowPos 设置窗口位置和大小（屏幕坐标）
+            user32.SetWindowPos(
+                hwnd,
+                wintypes.HWND(-1),  # HWND_TOPMOST
+                x, y, width, height,
+                SWP_NOZORDER,
+            )
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # 工具条

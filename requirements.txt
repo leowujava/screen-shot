@@ -4,3 +4,4 @@ pynput
 pystray
 pywin32
 rapidocr
+onnxruntime

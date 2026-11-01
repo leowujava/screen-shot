@@ -389,7 +389,7 @@ def test_toolbar_has_all_buttons(fake_root):
     for tool in ("brush", "rect", "ellipse", "arrow", "mosaic", "text"):
         assert tool in sel._tool_btns, f"缺少工具按钮: {tool}"
     # 操作按钮
-    for key in ("confirm", "copy", "save", "cancel"):
+    for key in ("confirm", "copy", "save", "cancel", "ocr"):
         assert key in sel._tb_btns, f"缺少操作按钮: {key}"
     # 每个按钮都绑定了 <Button-1>
     for b in list(sel._tool_btns.values()) + list(sel._tb_btns.values()):
@@ -586,3 +586,149 @@ def test_toolbar_enabled_in_adjust_mode(fake_root):
         calls = [c for c in b.configure.call_args_list
                  if c.kwargs.get("fg") == TB_FG]
         assert calls, f"工具 {tool} 在 adjust 模式未启用（fg 不是正常色）"
+
+
+# =================================================================== #
+# Task 6: 选区锁定（画过标注后手柄不可拖动）
+# =================================================================== #
+
+def test_hit_test_returns_none_after_annotation(fake_root):
+    """画过标注（undo 栈非空）后，_hit_test 应返回 None，手柄不可拖动。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    # 未画标注前，手柄可命中
+    assert sel._hit_test(10, 10) == "nw"
+
+    # 画一笔标注（undo.push 被调用，undo 栈非空）
+    sel.tool = "brush"; sel.color = "#000000"; sel.width_attr = 3
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(20, 20))
+
+    # 画过标注后，手柄不可命中
+    assert sel._hit_test(10, 10) is None, "画过标注后手柄应锁定（_hit_test 返回 None）"
+
+
+def test_hit_test_still_works_before_annotation(fake_root):
+    """未画标注时，_hit_test 正常工作。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    # 未画标注，undo 栈为空
+    assert sel.undo._stack == []
+    assert sel._hit_test(10, 10) == "nw"
+    assert sel._hit_test(90, 10) == "ne"
+    assert sel._hit_test(10, 90) == "sw"
+    assert sel._hit_test(50, 50) is None
+
+
+def test_handle_drag_blocked_after_annotation(fake_root):
+    """画过标注后，拖动手柄不应改变选区。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    # 画一笔标注
+    sel.tool = "brush"; sel.color = "#000000"; sel.width_attr = 3
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(20, 20))
+
+    # 尝试拖 nw 手柄
+    sel._on_press(E(10, 10))
+    assert sel._drag_op is None, "画过标注后不应设置 _drag_op（手柄锁定）"
+
+
+# =================================================================== #
+# Task 7: 工具切换不应 lift（避免抢焦点）
+# =================================================================== #
+
+def test_handle_unlocked_after_undo(fake_root):
+    """撤销后 undo 栈清空，手柄应重新可拖动。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    # 画一笔标注 → undo 栈非空 → 手柄锁定
+    sel.tool = "brush"; sel.color = "#000000"; sel.width_attr = 3
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(20, 20))
+    assert sel._hit_test(10, 10) is None
+
+    # 撤销 → undo 栈清空 → 手柄解锁
+    sel._undo()
+    assert sel._hit_test(10, 10) == "nw"
+
+
+# =================================================================== #
+# Task 8: 画布点击不应被 _is_over_toolbar 误吞
+# =================================================================== #
+
+def test_toolbar_topmost_after_annotation(fake_root):
+    """标注完成后，工具条应重新设置 -topmost，防止被画布窗口遮挡。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+
+    # 画一笔标注
+    sel.tool = "brush"; sel.color = "#000000"; sel.width_attr = 3
+    sel._on_press(E(20, 20))
+    sel._on_release(E(20, 20))
+
+    # 标注完成后，tb_win.wm_attributes 应被调用过（-topmost）
+    topmost_calls = [
+        c for c in sel.tb_win.wm_attributes.call_args_list
+        if c.args and c.args[0] == "-topmost"
+    ]
+    assert topmost_calls, "标注完成后未重新设置工具条 -topmost"
+
+
+def test_select_tool_sets_topmost_but_no_lift(fake_root):
+    """切换工具应设置 -topmost 但不 lift（避免抢焦点）。"""
+    sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._select_tool("rect")
+    # lift 不应被调用
+    sel.tb_win.lift.assert_not_called()
+    # -topmost 应被设置
+    topmost_calls = [
+        c for c in sel.tb_win.wm_attributes.call_args_list
+        if c.args and c.args[0] == "-topmost"
+    ]
+    assert topmost_calls, "切换工具后未设置 -topmost"

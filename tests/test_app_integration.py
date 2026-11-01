@@ -1,17 +1,11 @@
-"""验证 process_region_selection 直接打开 Editor（不再走 AnnotationWindow）。"""
+"""验证 process_region_selection 确认后直接复制 + 保存，不再打开 Editor。"""
 import pytest
 from unittest.mock import MagicMock, patch
 from PIL import Image
 
 
-@pytest.fixture
-def mock_editor():
-    with patch("app.Editor") as mock_ed:
-        mock_ed.return_value = MagicMock()
-        yield mock_ed
-
-
-def test_process_region_selection_opens_editor(mock_editor):
+def test_process_region_selection_copies_and_saves():
+    """确认后应复制到剪贴板并保存，不打开 Editor。"""
     import app
     app._tk_root_holder["root"] = MagicMock()
 
@@ -19,18 +13,20 @@ def test_process_region_selection_opens_editor(mock_editor):
     region = (10, 10, 50, 50)
     annotated = full.crop((10, 10, 60, 60))
 
-    app.process_region_selection(region, annotated)
+    with patch.object(app, "_safe_copy_to_clipboard") as mock_copy, \
+         patch.object(app, "save_image") as mock_save:
+        app.process_region_selection(region, annotated)
+        mock_copy.assert_called_once_with(annotated)
+        mock_save.assert_called_once_with(annotated, None)
 
-    mock_editor.assert_called_once()
-    call_args = mock_editor.call_args
-    assert call_args[0][0] is annotated  # image
-    assert call_args[1].get("root") is app._tk_root_holder["root"]  # root kwarg
 
-
-def test_process_region_selection_none_region_does_nothing(mock_editor):
+def test_process_region_selection_none_region_does_nothing():
+    """region 为 None 时不做任何事。"""
     import app
     app._tk_root_holder["root"] = MagicMock()
 
-    app.process_region_selection(None, None)
-
-    mock_editor.assert_not_called()
+    with patch.object(app, "_safe_copy_to_clipboard") as mock_copy, \
+         patch.object(app, "save_image") as mock_save:
+        app.process_region_selection(None, None)
+        mock_copy.assert_not_called()
+        mock_save.assert_not_called()

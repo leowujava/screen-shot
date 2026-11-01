@@ -25,7 +25,8 @@ CROSSHAIR_WIDTH = 1
 MASK_ALPHA = 128
 
 from drawing import (
-    draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text, mosaic, UndoStack,
+    draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text, mosaic,
+    UndoStack, get_ocr_engine, ocr_result_to_text,
 )
 from PIL import Image, ImageDraw, ImageTk
 
@@ -250,6 +251,12 @@ class Selector:
         undo_btn.bind("<Enter>", lambda e: undo_btn.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
         undo_btn.bind("<Leave>", lambda e: undo_btn.configure(bg=TB_BG, fg=TB_FG))
         undo_btn.bind("<Button-1>", lambda e: self._undo())
+
+        # 分隔
+        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=5)
+
+        # 识别文字
+        self._tb_btn(bar, "ocr", "🔍 识别", self._ocr)
 
         # 分隔
         tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=5)
@@ -623,6 +630,9 @@ class Selector:
     def _hit_test(self, x, y):
         if self._mode != "adjust" or self._region is None:
             return None
+        # 画过标注后选区锁定：undo 栈非空表示已有标注，手柄不可拖动
+        if self.undo:
+            return None
         l, t, r, b = self._region
         s = self.HANDLE_SIZE // 2  # 6px 热区，避免标注误触手柄
         for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
@@ -631,9 +641,6 @@ class Selector:
         return None
 
     def _on_press(self, event):
-        # 工具条区域点击不处理（让事件到达工具条按钮）
-        if self._is_over_toolbar(event.x, event.y):
-            return
         if self._mode == "select":
             # 按下立刻创建最小框并进入 adjust 模式
             self.start = (event.x, event.y)
@@ -679,9 +686,6 @@ class Selector:
             self.canvas.configure(cursor="crosshair")
 
     def _on_drag(self, event):
-        # 工具条区域拖拽不处理
-        if self._is_over_toolbar(event.x, event.y):
-            return
         # select→adjust 过渡：更新框大小
         if self._mode == "adjust" and self._drag_op is None and getattr(self, "start", None):
             sx, sy = self.start
@@ -795,6 +799,9 @@ class Selector:
                 min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry),
                 block=max(2, self.width_attr // 2 or 4))
         self._render_region(l, t)
+        # 标注完成后确保工具条不被画布窗口遮挡（不 lift，避免抢焦点）
+        if self.tb_win is not None and self.tb_win.winfo_exists():
+            self.tb_win.wm_attributes("-topmost", True)
 
     def _draw_preview(self, x0, y0, x1, y1):
         self._clear_preview()
@@ -847,7 +854,7 @@ class Selector:
         top = tk.Toplevel(self.root)
         top.title("输入文字")
         top.geometry("300x80")
-        top.transient(self.root)
+        top.wm_attributes("-topmost", True)
         top.grab_set()
         entry = tk.Entry(top, font=("Arial", 12))
         entry.pack(padx=8, pady=8, fill="x", expand=True)
@@ -879,10 +886,11 @@ class Selector:
 
     def _select_tool(self, name):
         self.tool = name
-        # 确保工具条保持在最前（防止被覆盖层遮挡）
+        # 确保工具条保持在最前（防止被画布窗口遮挡），但不用 lift()
+        # （lift 会抢焦点，导致画布点击被吞）。
+        # 只重新设置 -topmost，不改变焦点。
         if self.tb_win is not None and self.tb_win.winfo_exists():
             self.tb_win.wm_attributes("-topmost", True)
-            self.tb_win.lift()
         for tool, b in self._tool_btns.items():
             if tool == name:
                 b.configure(bg=TB_HOVER, fg=TB_HOVER_FG)
@@ -904,6 +912,102 @@ class Selector:
             self.width_attr = max(1, min(30, val))
         except (ValueError, tk.TclError):
             pass
+
+    # ------------------------------------------------------------------ #
+    # 识别文字（OCR）
+    # ------------------------------------------------------------------ #
+
+    def _ocr(self):
+        """识别选区图中文字，弹窗显示，可复制到剪贴板。"""
+        from tkinter import messagebox
+        import threading
+
+        if self._region_img is None:
+            return
+        engine = get_ocr_engine()
+        if engine is None:
+            messagebox.showerror(
+                "识别失败",
+                "未安装 OCR 引擎（rapidocr-onnxruntime）。\n请执行：pip install rapidocr-onnxruntime")
+            return
+
+        img = self._region_img.copy()
+
+        def run():
+            try:
+                import numpy as np
+                arr = np.array(img.convert("RGB"))
+                result = engine(arr)
+            except Exception as e:
+                msg = str(e)
+                self.root.after(0, lambda: messagebox.showerror("识别失败", msg))
+                return
+            text = ocr_result_to_text(result)
+            self.root.after(0, lambda t=text: self._show_ocr_result(t))
+
+        # OCR 较慢，放到工作线程，避免卡住界面
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_ocr_result(self, text):
+        """弹窗显示识别结果，支持复制全部 / 复制选中 / Ctrl+C。"""
+        if not text:
+            from tkinter import messagebox
+            messagebox.showinfo("识别文字", "未识别到文字。")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("识别文字")
+        dlg.geometry("520x360")
+        dlg.wm_attributes("-topmost", True)
+
+        txt = tk.Text(dlg, wrap="word", font=("Consolas", 11), relief="solid", bd=1)
+        txt.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        txt.insert("1.0", text)
+        # 只读但可选中（normal 状态 + 绑定 Ctrl+C）
+        txt.config(state="normal")
+
+        def _copy_to_clipboard(s):
+            try:
+                import win32clipboard
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(13, s)
+                finally:
+                    win32clipboard.CloseClipboard()
+                return True
+            except Exception:
+                return False
+
+        def copy_all():
+            if _copy_to_clipboard(text):
+                dlg.destroy()
+
+        def copy_selected():
+            try:
+                sel = txt.get("sel.first", "sel.last")
+                if sel:
+                    if _copy_to_clipboard(sel):
+                        dlg.destroy()
+            except (tk.TclError, Exception):
+                pass
+
+        def ctrl_c(event):
+            copy_selected()
+            return "break"
+
+        # Ctrl+C 复制选中
+        txt.bind("<Control-c>", ctrl_c)
+        txt.bind("<Control-C>", ctrl_c)
+
+        bar = tk.Frame(dlg)
+        bar.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Button(bar, text="复制全部", command=copy_all,
+                  font=("Microsoft YaHei UI", 9)).pack(side="right")
+        tk.Button(bar, text="复制选中", command=copy_selected,
+                  font=("Microsoft YaHei UI", 9)).pack(side="right", padx=(0, 8))
+        tk.Button(bar, text="关闭", command=dlg.destroy,
+                  font=("Microsoft YaHei UI", 9)).pack(side="right", padx=(0, 8))
 
     # ------------------------------------------------------------------ #
     # 确认 / 取消 / 复制 / 保存

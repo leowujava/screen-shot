@@ -5,6 +5,68 @@
 import math
 from PIL import Image, ImageDraw
 
+# ---------------------------------------------------------------------------
+# OCR（识别文字）
+# ---------------------------------------------------------------------------
+
+_OCR_ENGINE = None
+_OCR_ENGINE_READY = False
+
+
+def get_ocr_engine():
+    """懒加载 OCR 引擎（首次调用时初始化）。失败返回 None。
+
+    优先使用 rapidocr（PP-OCRv6，中英混合）；回退 rapidocr-onnxruntime（仅中文）。
+    """
+    global _OCR_ENGINE, _OCR_ENGINE_READY
+    if _OCR_ENGINE_READY:
+        return _OCR_ENGINE
+    try:
+        from rapidocr import RapidOCR
+        _OCR_ENGINE = RapidOCR()
+        _OCR_ENGINE_READY = True
+        return _OCR_ENGINE
+    except Exception:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR_ENGINE = RapidOCR()
+            _OCR_ENGINE_READY = True
+            return _OCR_ENGINE
+        except Exception:
+            return None
+
+
+def ocr_result_to_text(result):
+    """把 OCR 结果拼成按阅读顺序的文本（先上后下、先左后右，换行连接）。
+
+    兼容两种返回格式：
+    - rapidocr (v3) 的 RapidOCROutput：.boxes (n×4×2 ndarray) 与 .txts 一一对应
+    - rapidocr-onnxruntime 的 list：[[box, text, conf], ...]
+    result 为 None / 空时返回空字符串。
+    """
+    if result is None:
+        return ""
+
+    # 格式一：rapidocr v3 的 RapidOCROutput（有 .boxes / .txts 属性）
+    boxes = getattr(result, "boxes", None)
+    txts = getattr(result, "txts", None)
+    if boxes is not None and txts is not None:
+        if len(txts) == 0:
+            return ""
+        idx = sorted(range(len(txts)),
+                     key=lambda i: (round(boxes[i][0][1] / 8), boxes[i][0][0]))
+        return "\n".join(txts[i] for i in idx)
+
+    # 格式二：rapidocr-onnxruntime 的 list [[box, text, conf], ...]
+    if isinstance(result, (list, tuple)):
+        if len(result) == 0:
+            return ""
+        idx = sorted(range(len(result)),
+                     key=lambda i: (round(result[i][0][0][1] / 8), result[i][0][0][0]))
+        return "\n".join(result[i][1] for i in idx)
+
+    return ""
+
 
 class UndoStack:
     def __init__(self, maxlen=10):
@@ -23,6 +85,9 @@ class UndoStack:
 
     def clear(self):
         self._stack.clear()
+
+    def __len__(self):
+        return len(self._stack)
 
 
 def mosaic(img, left, top, right, bottom, block=8):

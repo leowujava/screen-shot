@@ -14,7 +14,6 @@ from capture import (
     copy_to_clipboard,
     save_image,
 )
-from editor import Editor
 from selector import Selector
 
 # 全局持有的共享 Tk 根窗口（在 main 的主线程创建）
@@ -58,16 +57,17 @@ def _safe_copy_to_clipboard(img):
 
 
 def process_region_selection(region, annotated_img):
-    """选区 + 标注结果 → 打开 Editor。region 为 None 时不做任何事。
+    """选区 + 标注结果 → 复制到剪贴板并保存。region 为 None 时不做任何事。
 
+    确认后不再打开 Editor，直接在 Selector 中完成标注后复制 + 保存。
     region: (left, top, width, height) 虚拟桌面坐标
     annotated_img: PIL Image（选区 crop + 标注）
     必须在主线程（Tk 主循环所在线程）调用。
     """
     if region is None or annotated_img is None:
         return
-    root = _tk_root_holder.get("root")
-    Editor(annotated_img, on_close=None, root=root).show()
+    _safe_copy_to_clipboard(annotated_img)
+    save_image(annotated_img, None)
 
 
 def _virtual_screen_origin():
@@ -381,7 +381,21 @@ def main():
         "<ctrl>+<shift>+s": lambda: do_fullscreen_capture(),
         "<ctrl>+<shift>+q": lambda: on_quit(),
     }):
-        _tk_root_holder["root"].mainloop()
+        try:
+            _tk_root_holder["root"].mainloop()
+        except KeyboardInterrupt:
+            pass
+        # 清理：停止托盘、关闭窗口
+        if "icon" in tray_holder:
+            try:
+                tray_holder["icon"].stop()
+            except Exception:
+                pass
+        try:
+            _tk_root_holder["root"].destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 if __name__ == "__main__":

@@ -73,29 +73,10 @@ class RegionSelector:
             self.root = tk.Toplevel(root)
             self.root.title("")
 
-        # 关键：用 Tk 的屏幕尺寸（而非 mss 的虚拟桌面尺寸）来设置窗口大小。
-        # mss 可能返回物理像素（如 5760x2160），而 Tk 的鼠标事件坐标
-        # 在逻辑像素空间（如 2560x1440）。如果窗口用 mss 尺寸，鼠标事件
-        # 最大坐标只有 Tk 屏幕尺寸，导致永远选不到真正的屏幕边缘。
-        try:
-            tk_w = self.root.winfo_screenwidth()
-            tk_h = self.root.winfo_screenheight()
-        except (tk.TclError, TypeError):
-            # 测试环境或 Tk 未就绪时，回退到传入的 width/height
-            tk_w = width
-            tk_h = height
-        # 如果 Tk 屏幕尺寸无效（0 或异常），也回退
-        if not isinstance(tk_w, int) or tk_w <= 0:
-            tk_w = width
-        if not isinstance(tk_h, int) or tk_h <= 0:
-            tk_h = height
-        self._tk_w = tk_w
-        self._tk_h = tk_h
-        # 坐标映射：Tk 坐标 → 虚拟桌面坐标的比例
-        self._scale_x = width / tk_w if tk_w else 1.0
-        self._scale_y = height / tk_h if tk_h else 1.0
-
-        self.root.geometry(f"{tk_w}x{tk_h}+{x}+{y}")
+        # 直接用传入的 width/height 设置窗口大小。
+        # app.py 传入的是主显示器的 mss 尺寸，与 capture_region 的坐标系一致。
+        # 窗口位置 (x, y) 是主显示器在虚拟桌面中的左上角。
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.attributes("-fullscreen", True)
         self.root.configure(bg="black")
         # 置顶 + 无边框
@@ -174,7 +155,7 @@ class RegionSelector:
         tb_w = self.tb_win.winfo_width()
         tb_h = self.tb_win.winfo_height()
         # 默认放选区下方；放不下时放上方（用 Tk 屏幕尺寸判断边界）
-        W, H = self._tk_w, self._tk_h
+        W, H = self.width, self.height
         ty = y + h + 4
         if ty + tb_h > H:
             ty = y - tb_h - 4
@@ -197,7 +178,7 @@ class RegionSelector:
 
     def _show_crosshair(self, x, y, w, h):
         """显示十字准星 + 实时尺寸标签。x, y 为鼠标位置，w, h 为当前选区尺寸。"""
-        W, H = self._tk_w, self._tk_h
+        W, H = self.width, self.height
         # 水平线
         if self._crosshair_h is None:
             self._crosshair_h = self.canvas.create_line(
@@ -263,8 +244,8 @@ class RegionSelector:
     def _render_all(self):
         """重绘动态元素（遮罩/选区/手柄/标签/工具条）。
 
-        使用 Tk 屏幕尺寸（self._tk_w x self._tk_h）作为画布范围，
-        鼠标事件坐标在 [0, _tk_w-1] x [0, _tk_h-1] 范围内。
+        使用传入的 width/height（主显示器 mss 尺寸）作为画布范围，
+        鼠标事件坐标在 [0, width-1] x [0, height-1] 范围内。
         使用 coords() 更新已有元素，避免 delete+create 的闪烁。
         """
         l, t, r, b = self._region if self._region else (None, None, None, None)
@@ -272,7 +253,7 @@ class RegionSelector:
             return
 
         # 画布范围 = Tk 屏幕尺寸（不是 mss 虚拟桌面尺寸）
-        W, H = self._tk_w, self._tk_h
+        W, H = self.width, self.height
 
         # 确保 4 个遮罩存在
         if "m1" not in self._items:
@@ -376,7 +357,7 @@ class RegionSelector:
         l, t, r, b = region
         l, r = min(l, r), max(l, r)
         t, b = min(t, b), max(t, b)
-        W, H = self._tk_w, self._tk_h
+        W, H = self.width, self.height
         if r < 0 or b < 0 or l >= W or t >= H:
             return None
         l = max(0, min(l, W))
@@ -410,7 +391,7 @@ class RegionSelector:
             self._mode = "adjust"
             # 创建 1x1 的最小框（以按下点为左上角），夹到 Tk 屏幕范围内
             x, y = event.x, event.y
-            W, H = self._tk_w, self._tk_h
+            W, H = self.width, self.height
             x = max(0, min(x, W - 1))
             y = max(0, min(y, H - 1))
             self._region = (x, y, x + 1, y + 1)
@@ -441,10 +422,10 @@ class RegionSelector:
             sx, sy = self.start
             x1, y1 = min(sx, event.x), min(sy, event.y)
             x2, y2 = max(sx, event.x), max(sy, event.y)
-            # 鼠标事件坐标范围是 [0, _tk_w-1]，拖到屏幕边缘时 snap 到完整边缘，
+            # 鼠标事件坐标范围是 [0, width-1]，拖到屏幕边缘时 snap 到完整边缘，
             # 否则选区永远差 1px 选不满。
             # 起点和终点任一贴边都要 snap（覆盖正向/反向拖拽）。
-            W, H = self._tk_w, self._tk_h
+            W, H = self.width, self.height
             if sx <= 1 or event.x <= 1:
                 x1 = 0
             if sy <= 1 or event.y <= 1:
@@ -513,14 +494,9 @@ class RegionSelector:
             self._cancel()
             return
         l, t, r, b = self._region
-        # 把 Tk 坐标换算回虚拟桌面坐标（mss 的坐标系），用于 capture_region
-        # Tk 坐标 [0, _tk_w] 映射到虚拟桌面 [0, self.width]
-        vx_l = int(l * self._scale_x)
-        vx_t = int(t * self._scale_y)
-        vx_r = int(r * self._scale_x)
-        vx_b = int(b * self._scale_y)
-        # 加回虚拟桌面原点偏移
-        self._finish((vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t))
+        # 画布坐标直接映射到虚拟桌面坐标（加回原点偏移 x, y）
+        # 窗口大小 = 主显示器 mss 尺寸，与 capture_region 坐标系一致
+        self._finish((l + self.x, t + self.y, r - l, b - t))
 
     def _cancel(self):
         self._finish(None)

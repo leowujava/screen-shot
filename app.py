@@ -1,5 +1,6 @@
 import ctypes
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -15,6 +16,19 @@ from capture import (
 )
 from editor import Editor
 from selector import RegionSelector
+
+
+def _get_primary_monitor():
+    """获取主显示器的 (left, top, width, height)。
+
+    用 mss 的 monitors[1]（主显示器），避免虚拟桌面（多屏合并）
+    与 Tk 屏幕尺寸不匹配导致选区框与截图区域错位。
+    """
+    import mss
+    with mss.MSS() as sct:
+        # monitors[0] 是虚拟桌面（所有屏幕合并），monitors[1] 是主显示器
+        mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+        return mon["left"], mon["top"], mon["width"], mon["height"]
 
 # 全局持有的共享 Tk 根窗口（在 main 的主线程创建）
 _tk_root_holder = {}
@@ -81,19 +95,20 @@ def do_region_capture():
 
     主线程正被 Tk 主循环 + 快捷键消息泵占用，不能阻塞，
     因此耗时的整屏抓取放到工作线程，完成后把选区窗口调度回主线程。
+    使用主显示器（而非虚拟桌面），避免多屏/DPI 下选区框与截图错位。
     """
     def worker():
         full = capture_fullscreen()
-        vsize = capture_virtual_screen_size()
-        vx, vy = _virtual_screen_origin()
+        # 主显示器 (left, top, width, height)
+        ml, mt, mw, mh = _get_primary_monitor()
 
         def on_select(region):
             process_region_selection(full, region)
 
         def open_selector():
-            # 选区窗口挂到共享根窗口上（非阻塞），on_select 由主循环回调
+            # 选区窗口覆盖主显示器，on_select 由主循环回调
             RegionSelector(
-                x=vx, y=vy, width=vsize[0], height=vsize[1],
+                x=ml, y=mt, width=mw, height=mh,
                 on_select=on_select, root=_tk_root_holder.get("root"),
             ).show()
 

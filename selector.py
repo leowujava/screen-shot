@@ -110,6 +110,7 @@ class Selector:
         self._region_photo = None
         self._mask_photos = []
         self._dragging_box = False
+        self._tb_pos = None
 
         self._shared_root = root
         if self._owns_root:
@@ -288,7 +289,11 @@ class Selector:
         if ty < 0:
             ty = y + h + 4
         tx = max(0, min(x, W - tb_w)) if tb_w else x
-        self.tb_win.geometry(f"+{self.x + tx}+{self.y + ty}")
+        screen_x = self.x + tx
+        screen_y = self.y + ty
+        self.tb_win.geometry(f"+{screen_x}+{screen_y}")
+        # 缓存工具条屏幕位置（供 _is_over_toolbar 使用，避免每帧 winfo）
+        self._tb_pos = (screen_x, screen_y, tb_w, tb_h)
 
     def _tb_hide(self):
         self._tb_visible = False
@@ -298,6 +303,24 @@ class Selector:
                 self.tb_win.withdraw()
             except tk.TclError:
                 pass
+
+    def _is_over_toolbar(self, cx, cy):
+        """判断 canvas 坐标 (cx, cy) 是否落在工具条窗口范围内。
+
+        用缓存的工具条位置（_tb_pos），避免每帧 winfo_* 调用。
+        _tb_pos 在 _tb_show 中更新。
+        """
+        if self.tb_win is None or not self._tb_visible:
+            return False
+        pos = getattr(self, "_tb_pos", None)
+        if pos is None:
+            return False
+        tx, ty, tw, th = pos
+        if tw <= 1 or th <= 1:
+            return False
+        sx = cx + self.x
+        sy = cy + self.y
+        return tx <= sx <= tx + tw and ty <= sy <= ty + th
 
     def _set_toolbar_enabled(self, enabled):
         """启用/禁用工具按钮。禁用时灰色 + 不响应。"""
@@ -608,6 +631,9 @@ class Selector:
         return None
 
     def _on_press(self, event):
+        # 工具条区域点击不处理（让事件到达工具条按钮）
+        if self._is_over_toolbar(event.x, event.y):
+            return
         if self._mode == "select":
             # 按下立刻创建最小框并进入 adjust 模式
             self.start = (event.x, event.y)
@@ -653,6 +679,9 @@ class Selector:
             self.canvas.configure(cursor="crosshair")
 
     def _on_drag(self, event):
+        # 工具条区域拖拽不处理
+        if self._is_over_toolbar(event.x, event.y):
+            return
         # select→adjust 过渡：更新框大小
         if self._mode == "adjust" and self._drag_op is None and getattr(self, "start", None):
             sx, sy = self.start

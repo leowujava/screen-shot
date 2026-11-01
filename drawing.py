@@ -29,6 +29,8 @@ def mosaic(img, left, top, right, bottom, block=8):
     """对 img 的 [left,top,right,bottom] 区域做马赛克，返回新图。
 
     选区无效（宽或高为 0、越界后无面积）时原样返回副本。
+    缩放使用 BILINEAR（下采样时平均像素，产生灰度过渡），
+    再用 NEAREST 放大（像素块清晰可见），实现"马赛克"效果。
     """
     result = img.copy()
     left, top = max(0, left), max(0, top)
@@ -38,7 +40,7 @@ def mosaic(img, left, top, right, bottom, block=8):
         return result
     region = result.crop((left, top, right, bottom))
     w, h = region.size
-    small = region.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
+    small = region.resize((max(1, w // block), max(1, h // block)), Image.BILINEAR)
     big = small.resize((w, h), Image.NEAREST)
     result.paste(big, (left, top))
     return result

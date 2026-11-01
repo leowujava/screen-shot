@@ -137,3 +137,182 @@ def test_adjust_region_clears_annotations(fake_root):
     assert win.region_img.getpixel((30, 30)) == (255, 0, 0)
     # 撤销栈应该被清空
     assert win.undo.pop() is None
+
+
+# =================================================================== #
+# Task 3: 标注功能测试
+# =================================================================== #
+
+def test_brush_annotation_draws_on_region_img(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    win = AnnotationWindow(
+        full_img=full,
+        region=(10, 10, 80, 80),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "brush"
+    win.color = "#000000"
+    win.width = 3
+
+    # 模拟按下 (20, 20) canvas 坐标 → region_img 坐标 (10, 10)
+    class E:
+        x, y = 20, 20
+    win._on_press(E())
+    # 模拟拖动到 (60, 60) canvas → region_img (50, 50)
+    class E2:
+        x, y = 60, 60
+    win._on_drag(E2())
+    win._on_release(E2())
+
+    # region_img 上应有黑色像素（画笔线条经过）
+    assert win.region_img.getpixel((30, 30)) == (0, 0, 0)
+
+
+def test_rect_annotation_draws_on_region_img(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    win = AnnotationWindow(
+        full_img=full,
+        region=(10, 10, 80, 80),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "rect"
+    win.color = "#ff0000"
+    win.width = 2
+
+    class E:
+        x, y = 20, 20
+    win._on_press(E())
+    class E2:
+        x, y = 80, 80
+    win._on_release(E2())
+
+    # region_img 上应有红色矩形边框
+    # 中心 (40, 40) 在 region_img 坐标 (30, 30)，矩形边框经过
+    assert win.region_img.getpixel((10, 40)) == (255, 0, 0)
+
+
+def test_undo_reverts_annotation(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    win = AnnotationWindow(
+        full_img=full,
+        region=(10, 10, 80, 80),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "rect"
+    win.color = "#ff0000"
+    win.width = 2
+
+    class E:
+        x, y = 20, 20
+    win._on_press(E())
+    class E2:
+        x, y = 80, 80
+    win._on_release(E2())
+
+    # 撤销
+    win._undo()
+    # region_img 应该恢复为原始 crop（白色）
+    assert win.region_img.getpixel((40, 40)) == (255, 255, 255)
+
+
+def test_mosaic_annotation(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(full)
+    d.line([(10, 10), (90, 90)], fill=(0, 0, 0), width=5)
+
+    win = AnnotationWindow(
+        full_img=full,
+        region=(0, 0, 100, 100),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "mosaic"
+    win.width = 8
+
+    class E:
+        x, y = 10, 10
+    win._on_press(E())
+    class E2:
+        x, y = 90, 90
+    win._on_release(E2())
+
+    # 马赛克后，对角线区域应有模糊
+    has_mid = any(win.region_img.getpixel((x, y)) not in ((0, 0, 0), (255, 255, 255))
+                  for x in range(0, 100, 5) for y in range(0, 100, 5))
+    assert has_mid
+
+
+def test_adjust_region_after_annotation_clears(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    win = AnnotationWindow(
+        full_img=full,
+        region=(10, 10, 80, 80),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "rect"
+    win.color = "#ff0000"
+    win.width = 2
+
+    class E:
+        x, y = 20, 20
+    win._on_press(E())
+    class E2:
+        x, y = 80, 80
+    win._on_release(E2())
+
+    # 调整选区
+    win._adjust_region(5, 5, 95, 95)
+
+    # region_img 应该被重新 crop，之前的标注消失
+    assert win.region_img.size == (90, 90)
+    assert win.region_img.getpixel((45, 45)) == (255, 255, 255)
+    # 撤销栈被清空
+    assert win.undo.pop() is None
+
+
+def test_text_annotation(fake_root):
+    """文字工具：_input_text 内部弹输入框，这里直接测 _input_text 的绘制逻辑。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    win = AnnotationWindow(
+        full_img=full,
+        region=(10, 10, 80, 80),
+        on_confirm=lambda img: None,
+        on_copy=lambda img: None,
+        on_save=lambda img: None,
+        on_cancel=lambda: None,
+        root=MagicMock(),
+    )
+    win.tool = "text"
+    win.color = "#000000"
+
+    # 直接调用 _input_text 的绘制部分（跳过弹窗）
+    from unittest.mock import patch
+    with patch.object(win, "_input_text_dialog") as mock_dialog:
+        # 模拟用户输入 "Hi"
+        mock_dialog.return_value = "Hi"
+        win._input_text(20, 20)
+
+    # 文字应该画在 region_img 上
+    has_dark = any(win.region_img.getpixel((x, y)) != (255, 255, 255)
+                   for x in range(15, 45) for y in range(15, 35))
+    assert has_dark

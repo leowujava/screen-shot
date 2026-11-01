@@ -327,12 +327,15 @@ class AnnotationWindow:
         }
 
     def _hit_test(self, x, y):
-        """判断点 (x, y) 落在哪个手柄，返回手柄名或 None。"""
+        """判断点 (x, y) 落在哪个手柄，返回手柄名或 None。
+
+        手柄热区 = 手柄中心 ± s，其中 s = HANDLE_SIZE // 2（6px），
+        避免手柄热区过大导致标注操作误触手柄。
+        """
         l, t, r, b = self._region_rect
-        s = self.HANDLE_SIZE
-        m = self.MARGIN
+        s = self.HANDLE_SIZE // 2
         for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
-            if abs(x - hx) <= s + m and abs(y - hy) <= s + m:
+            if abs(x - hx) <= s and abs(y - hy) <= s:
                 return name
         return None
 

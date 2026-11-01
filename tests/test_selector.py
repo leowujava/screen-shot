@@ -85,6 +85,11 @@ def fake_root():
         m.setattr(ctypes.windll.user32, "GetSystemMetrics",
                   lambda _n: 0, raising=False)
 
+        # 屏蔽 ImageTk.PhotoImage（需要真实 Tk 解释器）
+        import selector as sel_mod
+        m.setattr(sel_mod.ImageTk, "PhotoImage",
+                  MagicMock(name="PhotoImage"), raising=True)
+
         yield mock_root
 
 
@@ -506,3 +511,40 @@ def test_text_annotation(fake_root):
     has_dark = any(sel._region_img.getpixel((x, y)) != (255, 255, 255)
                    for x in range(15, 45) for y in range(15, 35))
     assert has_dark
+
+
+# =================================================================== #
+# Task 4: 渲染测试
+# =================================================================== #
+
+def test_render_all_in_adjust_mode_creates_masks_and_region(fake_root):
+    """adjust 模式下 _render_all 应创建 4 块遮罩 + 选区图。"""
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=200, height=200, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (50, 50, 150, 150)
+    sel._init_region_img()
+    sel._render_all()
+    # _items 里应有 bg / mask1-4 / region / rect / handles
+    assert "bg" in sel._items, "缺少背景"
+    for i in range(1, 5):
+        assert f"mask{i}" in sel._items, f"缺少遮罩 mask{i}"
+    assert "region" in sel._items, "缺少选区图"
+    assert "rect" in sel._items, "缺少选区边框"
+    assert "handles" in sel._items, "缺少手柄"
+
+
+def test_render_all_in_select_mode_no_masks(fake_root):
+    """select 模式下 _render_all 不应创建遮罩/选区图。"""
+    sel = Selector(x=0, y=0, width=200, height=200, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "select"
+    sel._render_all()
+    # select 模式不画遮罩
+    for i in range(1, 5):
+        assert f"mask{i}" not in sel._items, f"select 模式不应有 mask{i}"

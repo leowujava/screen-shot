@@ -123,15 +123,14 @@ class Selector:
         self._scale_y = height / self._actual_h if self._actual_h else 1.0
 
         self.root.geometry(f"{self._actual_w}x{self._actual_h}+{x}+{y}")
-        self.root.configure(bg="black")
+        self.root.configure(bg="#1e1e2e")
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
-        self.root.attributes("-alpha", 0.5)
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
         self.root.update_idletasks()
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
 
-        self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
+        self.canvas = tk.Canvas(self.root, bg="#1e1e2e", highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 

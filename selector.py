@@ -558,10 +558,9 @@ class Selector:
         if self._mode != "adjust" or self._region is None:
             return None
         l, t, r, b = self._region
-        s = self.HANDLE_SIZE
-        m = self.MARGIN
+        s = self.HANDLE_SIZE // 2  # 6px 热区，避免标注误触手柄
         for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
-            if abs(x - hx) <= s + m and abs(y - hy) <= s + m:
+            if abs(x - hx) <= s and abs(y - hy) <= s:
                 return name
         return None
 

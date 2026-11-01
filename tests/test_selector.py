@@ -1,5 +1,6 @@
 import tkinter as tk
 from unittest.mock import MagicMock
+from PIL import Image, ImageDraw
 
 import pytest
 
@@ -93,7 +94,6 @@ def fake_root():
 
 def test_selector_confirm_passes_region_and_img(fake_root):
     """确认时 on_select 收到 (region, annotated_img)。"""
-    from PIL import Image
     full = Image.new("RGB", (200, 200), (255, 255, 255))
     results = {}
     sel = Selector(
@@ -403,3 +403,106 @@ def test_select_tool_updates_state(fake_root):
     assert sel.tool == "arrow"
     # 选中按钮高亮，其他恢复
     assert sel._tool_btns["arrow"].configure.call_args is not None
+
+
+# =================================================================== #
+# Task 3: 标注绘制测试
+# =================================================================== #
+
+def test_brush_annotation_draws_on_region_img(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "brush"; sel.color = "#000000"; sel.width_attr = 3
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_drag(E(60, 60))
+    sel._on_release(E(60, 60))
+    # 画笔线条经过 (30, 30)
+    assert sel._region_img.getpixel((20, 20)) == (0, 0, 0)
+
+
+def test_rect_annotation_draws_on_region_img(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "rect"; sel.color = "#ff0000"; sel.width_attr = 2
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(80, 80))
+    assert sel._region_img.getpixel((10, 40)) == (255, 0, 0)
+
+
+def test_undo_reverts_annotation(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "rect"; sel.color = "#ff0000"; sel.width_attr = 2
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(80, 80))
+    sel._undo()
+    assert sel._region_img.getpixel((40, 40)) == (255, 255, 255)
+
+
+def test_mosaic_annotation(fake_root):
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    d = ImageDraw.Draw(full)
+    d.line([(10, 10), (90, 90)], fill=(0, 0, 0), width=5)
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (0, 0, 100, 100)
+    sel._init_region_img()
+    sel.tool = "mosaic"; sel.width_attr = 8
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(10, 10))
+    sel._on_release(E(90, 90))
+    has_mid = any(sel._region_img.getpixel((x, y)) not in ((0, 0, 0), (255, 255, 255))
+                  for x in range(0, 100, 5) for y in range(0, 100, 5))
+    assert has_mid
+
+
+def test_text_annotation(fake_root):
+    from unittest.mock import patch
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "text"; sel.color = "#000000"
+
+    with patch.object(sel, "_input_text_dialog") as mock_dialog:
+        mock_dialog.return_value = "Hi"
+        sel._input_text(20, 20)
+    has_dark = any(sel._region_img.getpixel((x, y)) != (255, 255, 255)
+                   for x in range(15, 45) for y in range(15, 35))
+    assert has_dark

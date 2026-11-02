@@ -8,14 +8,20 @@ _rapidocr_models = os.path.join(os.path.dirname(_rapidocr_pkg.__file__), 'models
 _ocr_datas = [(os.path.join(_rapidocr_models, f), os.path.join('rapidocr', 'models'))
               for f in os.listdir(_rapidocr_models) if f.endswith('.onnx')]
 
+# SVG 图标（工具栏美化）随包分发
+_root = os.path.dirname(os.path.abspath(__file__))
+_icon_datas = [(os.path.join(_root, 'assets', 'icons'), 'assets/icons')]
+_datas = _ocr_datas + _icon_datas
+
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=_ocr_datas,
+    datas=_datas,
     hiddenimports=['pystray._win32', 'pystray._xorg', 'pynput._util.win32', 'pynput.keyboard._win32', 'pynput.mouse._win32',
-                   'mss.windows', 'mss.windows.gdi',
-                   'rapidocr', 'rapidocr.main', 'rapidocr.utils', 'onnxruntime', 'numpy'],
+                    'mss.windows', 'mss.windows.gdi',
+                    'rapidocr', 'rapidocr.main', 'rapidocr.utils', 'onnxruntime', 'numpy',
+                    'svglib', 'reportlab', 'rlPyCairo', 'pycairo'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

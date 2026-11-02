@@ -5,3 +5,6 @@ pystray
 pywin32
 rapidocr
 onnxruntime
+svglib
+reportlab
+rlPyCairo

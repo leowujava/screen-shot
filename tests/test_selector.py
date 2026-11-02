@@ -95,7 +95,16 @@ def fake_root():
         m.setattr(sel_mod.ImageTk, "PhotoImage",
                   MagicMock(name="PhotoImage"), raising=True)
 
+        # 屏蔽 icon 模块的 ImageTk.PhotoImage（icon.render 调用）
+        import icon as icon_mod
+        m.setattr(icon_mod.ImageTk, "PhotoImage",
+                  MagicMock(name="PhotoImage"), raising=True)
+        # 清空 icon 缓存，避免 mock PhotoImage 泄漏到其他测试
+        icon_mod._reset_cache()
+
         yield mock_root
+        # 测试结束后再清一次缓存
+        icon_mod._reset_cache()
 
 
 # =================================================================== #
@@ -560,23 +569,21 @@ def test_render_all_in_select_mode_no_masks(fake_root):
 # =================================================================== #
 
 def test_toolbar_disabled_in_select_mode(fake_root):
-    """select 模式下工具按钮应灰色禁用。"""
-    from selector import TB_DISABLED
+    """select 模式下工具按钮应灰色禁用（图标切为 disabled 色）。"""
     sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
                    on_select=lambda r, i: None,
                    on_copy=lambda r, i: None,
                    on_save=lambda r, i: None)
     assert sel._mode == "select"
-    # 构造后应处于禁用状态
+    # 构造后应处于禁用状态：configure 被调用且 kwargs 含 image
     for tool, b in sel._tool_btns.items():
         calls = [c for c in b.configure.call_args_list
-                 if c.kwargs.get("fg") == TB_DISABLED]
-        assert calls, f"工具 {tool} 在 select 模式未禁用（fg 不是灰色）"
+                 if c.kwargs.get("image") is not None]
+        assert calls, f"工具 {tool} 在 select 模式未禁用（未切 image）"
 
 
 def test_toolbar_enabled_in_adjust_mode(fake_root):
-    """进入 adjust 模式后工具按钮应启用（fg 恢复 TB_FG）。"""
-    from selector import TB_FG
+    """进入 adjust 模式后工具按钮应启用（图标切回正常色）。"""
     sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
                    on_select=lambda r, i: None,
                    on_copy=lambda r, i: None,
@@ -586,11 +593,11 @@ def test_toolbar_enabled_in_adjust_mode(fake_root):
         def __init__(self, x, y): self.x, self.y = x, y
     sel._on_press(E(100, 100))
     assert sel._mode == "adjust"
-    # 启用后至少有一次 configure(fg=TB_FG)
+    # 启用后至少有一次 configure(image=...)
     for tool, b in sel._tool_btns.items():
         calls = [c for c in b.configure.call_args_list
-                 if c.kwargs.get("fg") == TB_FG]
-        assert calls, f"工具 {tool} 在 adjust 模式未启用（fg 不是正常色）"
+                 if c.kwargs.get("image") is not None]
+        assert calls, f"工具 {tool} 在 adjust 模式未启用（未切 image）"
 
 
 # =================================================================== #

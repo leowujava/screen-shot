@@ -1,28 +1,15 @@
 import sys
 import tkinter as tk
 
+from theme import (
+    LIGHT, DARK, PALETTE, FONT, FONT_ICON, ICON_SIZE,
+    BTN_PAD_X, BTN_PAD_Y, TB_RADIUS, SEP_W, SEP_H, rounded_rect_photo,
+)
+import icon
+
 # 选区完成回调常量
 SELECT_DONE = "done"      # 用户确认选区（Enter / 双击 / 工具条确认）
 SELECT_CANCEL = "cancel"  # 用户取消（Esc / 右键 / 工具条取消）
-
-# 工具条配色（白底 + 蓝色高亮，仿飞书截图工具条）
-TB_BG = "#ffffff"
-TB_FG = "#1f2329"
-TB_HOVER = "#f2f3f5"        # 按钮 hover 浅灰
-TB_SEP = "#e5e6eb"
-TB_DISABLED = "#c9cdd4"     # 禁用（select 模式）
-TB_ACTIVE = "#4a90e2"       # 选中工具（蓝圈/蓝字）
-TB_FONT = ("Microsoft YaHei UI", 10)
-TB_ICON_FONT = ("Microsoft YaHei UI", 12)  # 图标按钮字号（统一较小尺寸）
-
-# 确认 / 取消 图标颜色
-TB_CONFIRM_FG = "#22c55e"
-TB_CANCEL_FG = "#f5484d"
-
-# 预设色板（仿工具条下方弹出的颜色行；第一色 = 默认画图色，截图箭头红）
-PALETTE = ["#f5484d", "#3370ff", "#86909c",
-           "#4e5969", "#ffab00", "#22c55e",
-           "#3490ff", "#1f2329", "#a0a6b0", "#ffffff"]
 
 # 尺寸标签配色
 LABEL_BG = "#2b2f36"
@@ -75,8 +62,8 @@ class Selector:
 
     # 标注工具（取色已集成到颜色面板，不在主工具条）
     TOOLS = ("brush", "rect", "ellipse", "arrow", "mosaic", "text")
-    TOOL_ICONS = {"brush": "✏", "rect": "⬜", "ellipse": "◯", "arrow": "↗",
-                  "mosaic": "▒", "text": "T"}
+    TOOL_ICONS = {"brush": "brush", "rect": "rect", "ellipse": "ellipse",
+                  "arrow": "arrow", "mosaic": "mosaic", "text": "text"}
     TOOL_LABELS = {"brush": "画笔", "rect": "矩形", "ellipse": "圆形",
                    "arrow": "箭头", "mosaic": "打码", "text": "文字"}
 
@@ -223,17 +210,27 @@ class Selector:
         self.tb_win.wm_overrideredirect(True)
         self.tb_win.wm_attributes("-topmost", True)
         self.tb_win.attributes("-alpha", 1.0)
-        self.tb_win.configure(bg=TB_BG, bd=1, relief="solid")
+        self.tb_win.configure(bg=LIGHT["surface"], bd=1, relief="solid")
         self.tb_win.withdraw()
 
-        bar = tk.Frame(self.tb_win, bg=TB_BG)
+        # 容器圆角：Canvas 铺底，按钮用 create_window 摆放
+        self._tb_canvas = tk.Canvas(self.tb_win, bg=LIGHT["surface"],
+                                    highlightthickness=0)
+        self._tb_canvas.pack(fill="both", expand=True)
+        self._tb_bg_photo = None
+        self.tb_win.bind("<Configure>", lambda e: self._tb_redraw_bg())
+
+        bar = tk.Frame(self._tb_canvas, bg=LIGHT["surface"])
+        self._tb_bar_window = self._tb_canvas.create_window(
+            0, 0, window=bar, anchor="nw")
         bar.pack(fill="x", padx=4, pady=3)
 
-        # 工具按钮（图标 + hover 浅灰 + 选中蓝色）
+        # 工具按钮（SVG 图标 + hover 浅灰 + 选中蓝色）
         for tool in self.TOOLS:
-            b = tk.Label(bar, text=self.TOOL_ICONS[tool],
-                         fg=TB_FG, bg=TB_BG, font=TB_ICON_FONT,
-                         padx=6, pady=2, cursor="hand2")
+            name = self.TOOL_ICONS[tool]
+            b = tk.Label(bar, image=icon.render(name, LIGHT["fg"], master=self.tb_win),
+                         bg=LIGHT["surface"], padx=BTN_PAD_X, pady=BTN_PAD_Y,
+                         cursor="hand2")
             b.pack(side="left", padx=1)
             b.bind("<Enter>", lambda e, bb=b: self._tb_hover(bb, True))
             b.bind("<Leave>", lambda e, bb=b: self._tb_hover(bb, False))
@@ -244,8 +241,9 @@ class Selector:
         self._tb_sep(bar)
 
         # 颜色（单击弹出预设色板，双击打开系统取色器）
-        color_btn = tk.Label(bar, text="🎨", fg=TB_FG, bg=TB_BG, font=TB_ICON_FONT,
-                             padx=6, pady=2, cursor="hand2")
+        color_btn = tk.Label(
+            bar, image=icon.render("palette", LIGHT["fg"], master=self.tb_win),
+            bg=LIGHT["surface"], padx=BTN_PAD_X, pady=BTN_PAD_Y, cursor="hand2")
         color_btn.pack(side="left", padx=1)
         color_btn.bind("<Enter>", lambda e: self._tb_hover(color_btn, True))
         color_btn.bind("<Leave>", lambda e: self._tb_hover(color_btn, False))
@@ -256,16 +254,18 @@ class Selector:
         # 粗细
         self._width_var = tk.StringVar(master=self.root, value="3")
         spin = tk.Spinbox(bar, from_=1, to=30, width=3,
-                          textvariable=self._width_var, font=TB_FONT,
-                          bg=TB_BG, fg=TB_FG, bd=0, relief="flat",
-                          highlightthickness=1, highlightbackground=TB_SEP)
+                          textvariable=self._width_var, font=FONT,
+                          bg=LIGHT["surface"], fg=LIGHT["fg"], bd=0,
+                          relief="flat", highlightthickness=1,
+                          highlightbackground=LIGHT["sep"])
         spin.pack(side="left", padx=3)
         spin.bind("<FocusOut>", lambda e: self._on_width_change())
         spin.bind("<Return>", lambda e: self._on_width_change())
 
         # 撤销
-        undo_btn = tk.Label(bar, text="↩", fg=TB_FG, bg=TB_BG, font=TB_ICON_FONT,
-                            padx=6, pady=2, cursor="hand2")
+        undo_btn = tk.Label(
+            bar, image=icon.render("undo", LIGHT["fg"], master=self.tb_win),
+            bg=LIGHT["surface"], padx=BTN_PAD_X, pady=BTN_PAD_Y, cursor="hand2")
         undo_btn.pack(side="left", padx=1)
         undo_btn.bind("<Enter>", lambda e: self._tb_hover(undo_btn, True))
         undo_btn.bind("<Leave>", lambda e: self._tb_hover(undo_btn, False))
@@ -275,38 +275,67 @@ class Selector:
         self._tb_sep(bar)
 
         # 识别文字
-        self._tb_btn(bar, "ocr", "🔍", self._ocr)
+        self._tb_btn(bar, "ocr", "ocr", self._ocr)
 
         # 分隔
         self._tb_sep(bar)
 
         # 复制 / 保存 / 确认（绿）与取消（红）紧邻
-        self._tb_btn(bar, "copy", "⧉", self._copy)
-        self._tb_btn(bar, "save", "💾", self._save)
-        self._tb_btn(bar, "confirm", "✓", self._confirm, fg=TB_CONFIRM_FG)
-        self._tb_btn(bar, "cancel", "✕", self._cancel, fg=TB_CANCEL_FG)
+        self._tb_btn(bar, "copy", "copy", self._copy)
+        self._tb_btn(bar, "save", "save", self._save)
+        self._tb_btn(bar, "confirm", "confirm", self._confirm,
+                     fg=DARK["confirm"])
+        self._tb_btn(bar, "cancel", "cancel", self._cancel,
+                     fg=DARK["cancel"])
+
+    def _tb_redraw_bg(self):
+        """重算圆角背景图（窗口 resize 时触发）。"""
+        w = self.tb_win.winfo_width()
+        h = self.tb_win.winfo_height()
+        if w < 2 or h < 2:
+            return
+        if self._tb_bg_photo is not None:
+            self._tb_bg_photo = None  # 让旧 PhotoImage 被 GC
+        self._tb_bg_photo = rounded_rect_photo(
+            self.tb_win, w, h, TB_RADIUS, LIGHT["surface"], LIGHT["border"])
+        if "bg" in self._tb_canvas.delete if hasattr(self._tb_canvas, "bg") else {}:
+            pass
+        self._tb_canvas.delete("bg")
+        self._tb_canvas.create_image(0, 0, image=self._tb_bg_photo,
+                                     anchor="nw", tags="bg")
 
     def _tb_sep(self, bar):
-        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=6)
+        tk.Frame(bar, width=SEP_W, height=SEP_H, bg=LIGHT["sep"]).pack(
+            side="left", padx=6)
 
     def _tb_hover(self, b, enter):
-        """按钮 hover 浅灰底色（选中工具按钮保持蓝色）。"""
-        if enter:
-            if b in self._tool_btns.values() and self.tool == self._tb_active_tool:
-                return  # 选中按钮保持高亮
-            b.configure(bg=TB_HOVER)
+        """按钮 hover：切换图标颜色（选中工具按钮保持蓝色）。"""
+        if b in self._tool_btns.values() and self.tool == self._tb_active_tool:
+            return  # 选中按钮保持高亮
+        tool = None
+        for t, btn in self._tool_btns.items():
+            if btn is b:
+                tool = t
+                break
+        if tool is not None:
+            name = self.TOOL_ICONS[tool]
+            color = LIGHT["hover_fg"] if enter else LIGHT["fg"]
+            b.configure(image=icon.render(name, color, master=self.tb_win))
         else:
-            if b in self._tool_btns.values() and self.tool == self._tb_active_tool:
-                return
-            b.configure(bg=TB_BG)
+            # 非工具按钮（颜色/撤销等）：hover 只切底色
+            if enter:
+                b.configure(bg=LIGHT["hover"])
+            else:
+                b.configure(bg=LIGHT["surface"])
 
-    def _tb_btn(self, parent, key, text, command, fg=None):
-        fg = fg or TB_FG
-        b = tk.Label(parent, text=text, fg=fg, bg=TB_BG, font=TB_ICON_FONT,
-                     padx=6, pady=2, cursor="hand2")
+    def _tb_btn(self, parent, key, name, command, fg=None):
+        fg = fg or LIGHT["fg"]
+        b = tk.Label(parent, image=icon.render(name, fg, master=self.tb_win),
+                     bg=LIGHT["surface"], padx=BTN_PAD_X, pady=BTN_PAD_Y,
+                     cursor="hand2")
         b.pack(side="left", padx=1)
-        b.bind("<Enter>", lambda e, bb=b: bb.configure(bg=TB_HOVER))
-        b.bind("<Leave>", lambda e, bb=b: bb.configure(bg=TB_BG))
+        b.bind("<Enter>", lambda e, bb=b: bb.configure(bg=LIGHT["hover"]))
+        b.bind("<Leave>", lambda e, bb=b: bb.configure(bg=LIGHT["surface"]))
         b.bind("<Button-1>", lambda e, c=command: c())
         self._tb_btns[key] = b
         return b
@@ -316,9 +345,9 @@ class Selector:
         if self._color_row is not None:
             self._close_color_row()
             return
-        self._color_row = tk.Frame(self.tb_win, bg=TB_BG, bd=1,
+        self._color_row = tk.Frame(self.tb_win, bg=LIGHT["surface"], bd=1,
                                    highlightthickness=1,
-                                   highlightbackground=TB_SEP)
+                                   highlightbackground=LIGHT["sep"])
         self._color_row.pack(fill="x", padx=6, pady=(0, 4))
         # 色板
         for c in PALETTE:
@@ -354,9 +383,11 @@ class Selector:
             return
         for c, b in self._color_btns.items():
             if c.lower() == self.color.lower():
-                b.configure(highlightbackground=TB_ACTIVE, highlightthickness=2)
+                b.configure(highlightbackground=LIGHT["active"],
+                            highlightthickness=2)
             else:
-                b.configure(highlightbackground="#c9cdd4", highlightthickness=1)
+                b.configure(highlightbackground=LIGHT["disabled"],
+                            highlightthickness=1)
 
     def _tb_show(self, pos, size):
         if not self._tb_visible:
@@ -421,14 +452,21 @@ class Selector:
     def _set_toolbar_enabled(self, enabled):
         """启用/禁用工具按钮。禁用时灰色 + 不响应。"""
         for tool, b in self._tool_btns.items():
+            name = self.TOOL_ICONS[tool]
             if enabled:
                 if tool == self.tool:
-                    b.configure(fg=TB_ACTIVE, bg=TB_BG, cursor="hand2")
+                    color = LIGHT["active_fg"]
+                    bg = LIGHT["active"]
                 else:
-                    b.configure(fg=TB_FG, bg=TB_BG, cursor="hand2")
+                    color = LIGHT["fg"]
+                    bg = LIGHT["surface"]
+                b.configure(image=icon.render(name, color, master=self.tb_win),
+                            bg=bg, cursor="hand2")
                 b.bind("<Button-1>", lambda e, t=tool: self._select_tool(t))
             else:
-                b.configure(fg=TB_DISABLED, bg=TB_BG, cursor="arrow")
+                b.configure(image=icon.render(name, LIGHT["disabled"],
+                                              master=self.tb_win),
+                            bg=LIGHT["surface"], cursor="arrow")
                 b.bind("<Button-1>", lambda e: None)
 
     # ------------------------------------------------------------------ #
@@ -641,7 +679,7 @@ class Selector:
             for name, (hx, hy) in coords.items():
                 handles[name] = self.canvas.create_rectangle(
                     hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s,
-                    fill="#ffffff", outline=TB_BG, width=1)
+                    fill="#ffffff", outline=LIGHT["surface"], width=1)
             self._items["handles"] = handles
         else:
             h = self._items["handles"]
@@ -1021,10 +1059,15 @@ class Selector:
         if self.tb_win is not None and self.tb_win.winfo_exists():
             self.tb_win.wm_attributes("-topmost", True)
         for tool, b in self._tool_btns.items():
+            icon_name = self.TOOL_ICONS[tool]
             if tool == name:
-                b.configure(fg=TB_ACTIVE, bg=TB_BG)
+                b.configure(image=icon.render(icon_name, LIGHT["active_fg"],
+                                               master=self.tb_win),
+                            bg=LIGHT["active"])
             else:
-                b.configure(fg=TB_FG, bg=TB_BG)
+                b.configure(image=icon.render(icon_name, LIGHT["fg"],
+                                              master=self.tb_win),
+                            bg=LIGHT["surface"])
 
 
     def _pick_color(self):

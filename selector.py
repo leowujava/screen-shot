@@ -797,7 +797,7 @@ class Selector:
             self._region_img = mosaic(
                 self._region_img,
                 min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry),
-                block=max(2, self.width_attr // 2 or 4))
+                block=24)
         self._render_region(l, t)
         # 标注完成后确保工具条不被画布窗口遮挡（不 lift，避免抢焦点）
         if self.tb_win is not None and self.tb_win.winfo_exists():

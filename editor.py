@@ -748,7 +748,7 @@ class Editor:
             r = min(r, self.image.width)
             b = min(b, self.image.height)
             if r > l and b > t:
-                self.image = mosaic(self.image, l, t, r, b, block=8)
+                self.image = mosaic(self.image, l, t, r, b, block=24)
                 self._render()
                 self._sync_clipboard()
         elif self.tool == "crop":

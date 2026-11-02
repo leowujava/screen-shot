@@ -3,7 +3,7 @@
 供 editor.py 和 selector.py 使用。
 """
 import math
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 # ---------------------------------------------------------------------------
 # OCR（识别文字）
@@ -90,12 +90,13 @@ class UndoStack:
         return len(self._stack)
 
 
-def mosaic(img, left, top, right, bottom, block=8):
+def mosaic(img, left, top, right, bottom, block=24):
     """对 img 的 [left,top,right,bottom] 区域做马赛克，返回新图。
 
     选区无效（宽或高为 0、越界后无面积）时原样返回副本。
-    缩放使用 BILINEAR（下采样时平均像素，产生灰度过渡），
-    再用 NEAREST 放大（像素块清晰可见），实现"马赛克"效果。
+    先轻微高斯模糊，再按 block 倍下采样（BILINEAR 平均像素），
+    最后用 NEAREST 放大回原尺寸——像素块粗大、内容细节不可辨认。
+    block 为马赛克块边长（像素），默认 24。
     """
     result = img.copy()
     left, top = max(0, left), max(0, top)
@@ -105,6 +106,8 @@ def mosaic(img, left, top, right, bottom, block=8):
         return result
     region = result.crop((left, top, right, bottom))
     w, h = region.size
+    block = max(1, int(block))
+    region = region.filter(ImageFilter.GaussianBlur(radius=1.2))
     small = region.resize((max(1, w // block), max(1, h // block)), Image.BILINEAR)
     big = small.resize((w, h), Image.NEAREST)
     result.paste(big, (left, top))

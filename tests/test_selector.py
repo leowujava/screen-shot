@@ -498,62 +498,6 @@ def test_mosaic_annotation(fake_root):
     assert has_mid
 
 
-def test_eyedrop_sets_color(fake_root):
-    """从颜色面板启动取色，点击选区应取该像素颜色设为当前画图颜色。"""
-    full = Image.new("RGB", (100, 100), (255, 255, 255))
-    d = ImageDraw.Draw(full)
-    d.rectangle([20, 20, 80, 80], fill=(0, 128, 255))
-    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
-                    on_select=lambda r, i: None,
-                    on_copy=lambda r, i: None,
-                    on_save=lambda r, i: None)
-    sel._mode = "adjust"
-    sel._region = (0, 0, 100, 100)
-    sel._init_region_img()
-    sel.color = "#ffffff"
-    # 从颜色面板启动取色
-    sel._start_eyedrop()
-    assert sel.tool == "eyedrop"
-    assert sel._eyedrop_mode is True
-
-    class E:
-        def __init__(self, x, y): self.x, self.y = x, y
-    # 点击蓝色方块中心 (50, 50)
-    sel._on_press(E(50, 50))
-    sel._on_release(E(50, 50))
-    assert sel.color == "#0080ff", f"取色结果 {sel.color} != #0080ff"
-    # 取色后应恢复之前的工具
-    assert sel.tool == "brush"
-
-
-def test_eyedrop_switch_tool_after_use(fake_root):
-    """从颜色面板取色后应能正常切换工具（回归：之前 _eyedrop_mode 卡死）。"""
-    full = Image.new("RGB", (100, 100), (255, 255, 255))
-    d = ImageDraw.Draw(full)
-    d.rectangle([20, 20, 80, 80], fill=(0, 128, 255))
-    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
-                    on_select=lambda r, i: None,
-                    on_copy=lambda r, i: None,
-                    on_save=lambda r, i: None)
-    sel._mode = "adjust"
-    sel._region = (0, 0, 100, 100)
-    sel._init_region_img()
-
-    class E:
-        def __init__(self, x, y): self.x, self.y = x, y
-
-    # 1. 从颜色面板启动取色
-    sel._start_eyedrop()
-    # 2. 取色
-    sel._on_press(E(50, 50))
-    sel._on_release(E(50, 50))
-    assert sel.color == "#0080ff"
-    # 取色结束后 _eyedrop_mode 应已重置
-    assert sel._eyedrop_mode is False
-    # 取色后自动恢复之前的工具
-    assert sel.tool == "brush"
-
-
 def test_text_annotation(fake_root):
     from unittest.mock import patch
     full = Image.new("RGB", (100, 100), (255, 255, 255))

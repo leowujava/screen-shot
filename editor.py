@@ -124,8 +124,8 @@ class Editor:
     TOOL_LABELS = {"brush": "画笔", "rect": "矩形", "ellipse": "圆形",
                    "arrow": "箭头", "mosaic": "打码", "text": "文字",
                    "crop": "裁剪"}
-    TOOL_ICONS = {"brush": "✏", "rect": "▭", "ellipse": "◯", "arrow": "↗",
-                  "mosaic": "▦", "text": "T", "crop": "✂"}
+    TOOL_ICONS = {"brush": "✎", "rect": "⬜", "ellipse": "◯", "arrow": "↗",
+                  "mosaic": "▒", "text": "T", "crop": "✂"}
 
     # 主题色
     BG = "#f3f5f7"          # 工具栏背景
@@ -244,7 +244,7 @@ class Editor:
             btn = tk.Label(
                 group, text=f"{self.TOOL_ICONS[name]}",
                 fg=TB_FG, bg=TB_BTN_BG,
-                font=("Segoe UI", 11), padx=7, pady=3,
+                font=("Segoe UI", 12), padx=6, pady=2,
                 cursor="hand2", relief="flat", bd=0,
             )
             btn.grid(row=0, column=i, padx=2)

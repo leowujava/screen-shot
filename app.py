@@ -16,6 +16,12 @@ from capture import (
 )
 from selector import Selector
 
+from theme import (
+    DARK, FONT_ICON, ICON_SIZE, BTN_PAD_X, BTN_PAD_Y, TB_RADIUS,
+    rounded_rect_photo,
+)
+import icon
+
 # 全局持有的共享 Tk 根窗口（在 main 的主线程创建）
 _tk_root_holder = {}
 
@@ -188,19 +194,13 @@ def _make_tray_icon_image():
 class FloatingMenu:
     """悬浮菜单：在指定屏幕坐标处弹出无边框置顶菜单。
 
-    items: [(label, command), ...]
+    items: [(label, command, icon_name), ...]
+      label: 菜单项文字（None 表示分隔线）
+      command: 点击回调
+      icon_name: assets/icons/ 下的 SVG 文件名
     root:  共享 Tk 根窗口（菜单作为其 Toplevel 打开，由主循环驱动）
     """
 
-    # 主题色（与编辑器保持一致）
-    BG = "#2b2f36"
-    FG = "#f5f6f8"
-    HOVER = "#4a90e2"
-    HOVER_FG = "#ffffff"
-    SEP = "#3a3f47"
-    FONT = ("Microsoft YaHei UI", 10)
-    PAD_X = 14
-    PAD_Y = 6
     MIN_W = 140
 
     def __init__(self, items, root):
@@ -217,27 +217,46 @@ class FloatingMenu:
         self.win = tk.Toplevel(self.root)
         self.win.wm_overrideredirect(True)   # 无边框（不占用任务栏）
         self.win.wm_attributes("-topmost", True)
-        self.win.configure(bg=self.BG, bd=1, relief="solid")
+        self.win.configure(bg=DARK["surface"], bd=1, relief="solid")
         self.win.geometry(f"+{x}+{y}")
 
-        inner = tk.Frame(self.win, bg=self.BG)
+        # 容器圆角：Canvas 铺底
+        self._tb_canvas = tk.Canvas(self.win, bg=DARK["surface"],
+                                    highlightthickness=0)
+        self._tb_canvas.pack(fill="both", expand=True)
+        self._tb_bg_photo = None
+        self.win.bind("<Configure>", lambda e: self._tb_redraw_bg())
+
+        inner = tk.Frame(self._tb_canvas, bg=DARK["surface"])
+        self._tb_bar_window = self._tb_canvas.create_window(
+            0, 0, window=inner, anchor="nw")
         inner.pack(fill="both", expand=True, padx=1, pady=1)
 
-        for i, (label, command) in enumerate(self.items):
+        for i, (label, command, icon_name) in enumerate(self.items):
             if label is None:  # 分隔线
-                sep = tk.Frame(inner, height=1, bg=self.SEP, highlightthickness=0)
+                sep = tk.Frame(inner, height=1, bg=DARK["sep"],
+                               highlightthickness=0)
                 sep.pack(fill="x", padx=6, pady=4)
                 continue
-            btn = tk.Label(
-                inner, text=label, anchor="w",
-                fg=self.FG, bg=self.BG,
-                font=self.FONT, padx=self.PAD_X, pady=self.PAD_Y,
-            )
-            btn.pack(fill="x")
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=self.HOVER, fg=self.HOVER_FG))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=self.BG, fg=self.FG))
-            btn.bind("<Button-1>", lambda e, c=command: (c(), self.close()))
-            self._buttons.append(btn)
+            # Frame 内放图标 Label + 文字 Label
+            frame = tk.Frame(inner, bg=DARK["surface"])
+            frame.pack(fill="x")
+            icon_label = tk.Label(
+                frame, image=icon.render(icon_name, DARK["fg"],
+                                         master=self.win),
+                bg=DARK["surface"], padx=BTN_PAD_X, pady=BTN_PAD_Y)
+            icon_label.pack(side="left")
+            text_label = tk.Label(
+                frame, text=label, anchor="w",
+                fg=DARK["fg"], bg=DARK["surface"],
+                font=FONT_ICON, padx=BTN_PAD_X, pady=BTN_PAD_Y)
+            text_label.pack(side="left")
+            frame.bind("<Enter>", lambda e, f=frame, n=icon_name:
+                       self._menu_item_enter(f, n))
+            frame.bind("<Leave>", lambda e, f=frame, n=icon_name:
+                       self._menu_item_leave(f, n))
+            frame.bind("<Button-1>", lambda e, c=command: (c(), self.close()))
+            self._buttons.append(frame)
 
         # 点击菜单外部时关闭
         self.win.bind("<FocusOut>", lambda e: self._close_on_outside())
@@ -257,6 +276,50 @@ class FloatingMenu:
 
         self.win.lift()
         self.win.focus_force()
+
+    def _tb_redraw_bg(self):
+        """重算圆角背景图（窗口 resize 时触发）。"""
+        w = self.win.winfo_width()
+        h = self.win.winfo_height()
+        if w < 2 or h < 2:
+            return
+        if self._tb_bg_photo is not None:
+            self._tb_bg_photo = None
+        self._tb_bg_photo = rounded_rect_photo(
+            self.win, w, h, TB_RADIUS, DARK["surface"], DARK["border"])
+        self._tb_canvas.delete("bg")
+        self._tb_canvas.create_image(0, 0, image=self._tb_bg_photo,
+                                     anchor="nw", tags="bg")
+
+    def _menu_item_enter(self, frame, icon_name):
+        """菜单项 hover：切图标颜色 + 底色。"""
+        frame.configure(bg=DARK["hover"])
+        for child in frame.winfo_children():
+            if isinstance(child, tk.Label):
+                try:
+                    child.configure(
+                        image=icon.render(icon_name, DARK["hover_fg"],
+                                          master=self.win),
+                        bg=DARK["hover"])
+                except tk.TclError:
+                    pass
+                if child.cget("text"):
+                    child.configure(fg=DARK["hover_fg"], bg=DARK["hover"])
+
+    def _menu_item_leave(self, frame, icon_name):
+        """菜单项离开：恢复默认颜色。"""
+        frame.configure(bg=DARK["surface"])
+        for child in frame.winfo_children():
+            if isinstance(child, tk.Label):
+                try:
+                    child.configure(
+                        image=icon.render(icon_name, DARK["fg"],
+                                          master=self.win),
+                        bg=DARK["surface"])
+                except tk.TclError:
+                    pass
+                if child.cget("text"):
+                    child.configure(fg=DARK["fg"], bg=DARK["surface"])
 
     def _close_on_outside(self):
         """FocusOut 时，若鼠标已不在菜单内则关闭。"""
@@ -325,11 +388,11 @@ def main():
     def _get_menu():
         if "menu" not in _menu_holder:
             items = [
-                ("📷 框选截图", do_region_capture),
-                ("🖥 全屏截图", do_fullscreen_capture),
-                ("📋 复制截图", do_copy_capture),
-                (None, None),  # 分隔线
-                ("✕ 退出", on_quit),
+                ("框选截图", do_region_capture, "region"),
+                ("全屏截图", do_fullscreen_capture, "fullscreen"),
+                ("复制截图", do_copy_capture, "copy"),
+                (None, None, None),  # 分隔线
+                ("退出", on_quit, "cancel"),
             ]
             _menu_holder["menu"] = FloatingMenu(items, _tk_root_holder["root"])
         return _menu_holder["menu"]

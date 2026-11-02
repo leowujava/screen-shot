@@ -579,10 +579,10 @@ class Selector:
             self._items["m3"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
             self._items["m4"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
             self._items["rect"] = self.canvas.create_rectangle(0, 0, 0, 0, outline="white", width=2)
-        self.canvas.coords(self._items["m1"], 0, 0, l, t)
-        self.canvas.coords(self._items["m2"], r, 0, W, t)
-        self.canvas.coords(self._items["m3"], 0, b, l, H)
-        self.canvas.coords(self._items["m4"], r, b, W, H)
+        self.canvas.coords(self._items["m1"], 0, 0, W, t)
+        self.canvas.coords(self._items["m2"], 0, t, l, b)
+        self.canvas.coords(self._items["m3"], r, t, W, b)
+        self.canvas.coords(self._items["m4"], 0, b, W, H)
         self.canvas.coords(self._items["rect"], l, t, r, b)
         # 工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
@@ -601,10 +601,10 @@ class Selector:
         """重建 4 块半透明暗化遮罩（选区外）。"""
         W, H = self._actual_w, self._actual_h
         zones = [
-            (0, 0, l, t),
-            (r, 0, W, t),
-            (0, b, l, H),
-            (r, b, W, H),
+            (0, 0, W, t),
+            (0, t, l, b),
+            (r, t, W, b),
+            (0, b, W, H),
         ]
         self._mask_photos = []
         for i, (zx0, zy0, zx1, zy1) in enumerate(zones):

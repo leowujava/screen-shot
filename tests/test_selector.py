@@ -793,3 +793,30 @@ def test_select_tool_sets_topmost_but_no_lift(fake_root):
         if c.args and c.args[0] == "-topmost"
     ]
     assert topmost_calls, "切换工具后未设置 -topmost"
+
+
+def test_selection_masks_cover_all_outside_areas(fake_root):
+    """选区外四周都应保持暗化，只有框内区域高亮。"""
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._actual_w = 100
+    sel._actual_h = 100
+
+    sel._render_lightweight(20, 30, 70, 80)
+    lightweight_coords = [call.args[1:] for call in sel.canvas.coords.call_args_list]
+    assert lightweight_coords[-5:] == [
+        (0, 0, 100, 30),
+        (0, 30, 20, 80),
+        (70, 30, 100, 80),
+        (0, 80, 100, 100),
+        (20, 30, 70, 80),
+    ]
+
+    sel.canvas.create_image.reset_mock()
+    sel._render_masks(20, 30, 70, 80)
+    mask_origins = [
+        call.args[:2] for call in sel.canvas.create_image.call_args_list
+    ]
+    assert mask_origins == [(0, 0), (0, 30), (70, 30), (0, 80)]

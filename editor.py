@@ -13,6 +13,12 @@ from drawing import (
 import json
 import os
 
+from theme import (
+    DARK, FONT, ICON_SIZE, BTN_PAD_X, BTN_PAD_Y, TB_RADIUS, SEP_W, SEP_H,
+    rounded_rect_photo,
+)
+import icon
+
 # OCR 引擎（懒加载，未安装时 OCR 功能会提示而不影响其余功能）
 # 使用 rapidocr（PP-OCRv6，中英混合识别），而非仅支持中文的 rapidocr-onnxruntime
 _OCR_ENGINE = None
@@ -124,20 +130,12 @@ class Editor:
     TOOL_LABELS = {"brush": "画笔", "rect": "矩形", "ellipse": "圆形",
                    "arrow": "箭头", "mosaic": "打码", "text": "文字",
                    "crop": "裁剪"}
-    TOOL_ICONS = {"brush": "✎", "rect": "⬜", "ellipse": "◯", "arrow": "↗",
-                  "mosaic": "▒", "text": "T", "crop": "✂"}
+    TOOL_ICONS = {"brush": "brush", "rect": "rect", "ellipse": "ellipse",
+                  "arrow": "arrow", "mosaic": "mosaic", "text": "text",
+                  "crop": "crop"}
 
-    # 主题色
-    BG = "#f3f5f7"          # 工具栏背景
-    BG_DARK = "#2b2f36"     # 选中工具按钮背景
-    FG = "#2b2f36"          # 文字颜色
-    FG_SELECTED = "#ffffff" # 选中工具按钮文字
-    BTN_BG = "#ffffff"      # 普通按钮背景
-    BTN_BORDER = "#d7dbe0"  # 按钮边框
-    BTN_HOVER = "#e9eef2"   # 悬停
-    ACCENT = "#4a90e2"      # 强调色
-    SEPARATOR = "#d7dbe0"
-    CANVAS_BG_DEFAULT = "#1f2228"  # 画布（图像周围）默认背景
+    # 画布（图像周围）默认背景
+    CANVAS_BG_DEFAULT = "#1f2228"
 
     def __init__(self, image, on_close, root=None):
         """
@@ -219,50 +217,53 @@ class Editor:
 
         工具栏不占用画布空间；通过 -yoffset 让它始终位于图像顶部。
         """
-        TB_BG = "#2b2f36"
-        TB_FG = "#f5f6f8"
-        TB_HOVER = "#4a90e2"
-        TB_HOVER_FG = "#ffffff"
-        TB_BTN_BG = "#3a3f47"
-        TB_BTN_BORDER = "#4a5160"
-        FONT = ("Microsoft YaHei UI", 9)
-
         # 工具栏作为独立顶层窗口（parent=None），不继承编辑框根窗口的
         # -topmost 属性，从而不会始终浮在所有窗口之上。
         self.toolbar = tk.Toplevel()
         self.toolbar.wm_overrideredirect(True)      # 无边框
-        self.toolbar.configure(bg=TB_BG, bd=1, relief="solid")
+        self.toolbar.configure(bg=DARK["surface"], bd=1, relief="solid")
 
-        bar = tk.Frame(self.toolbar, bg=TB_BG)
+        # 容器圆角：Canvas 铺底
+        self._tb_canvas = tk.Canvas(self.toolbar, bg=DARK["surface"],
+                                    highlightthickness=0)
+        self._tb_canvas.pack(fill="both", expand=True)
+        self._tb_bg_photo = None
+        self.toolbar.bind("<Configure>", lambda e: self._tb_redraw_bg())
+
+        bar = tk.Frame(self._tb_canvas, bg=DARK["surface"])
+        self._tb_bar_window = self._tb_canvas.create_window(
+            0, 0, window=bar, anchor="nw")
         bar.pack(fill="x", padx=6, pady=5)
 
         # --- 工具按钮组 ---
-        group = tk.Frame(bar, bg=TB_BG)
+        group = tk.Frame(bar, bg=DARK["surface"])
         group.pack(side="left")
         self.tool_var = tk.StringVar(value="brush")
         for i, name in enumerate(self.TOOLS):
+            icon_name = self.TOOL_ICONS[name]
             btn = tk.Label(
-                group, text=f"{self.TOOL_ICONS[name]}",
-                fg=TB_FG, bg=TB_BTN_BG,
-                font=("Segoe UI", 12), padx=6, pady=2,
+                group, image=icon.render(icon_name, DARK["fg"],
+                                         master=self.toolbar),
+                bg=DARK["btn"], padx=BTN_PAD_X, pady=BTN_PAD_Y,
                 cursor="hand2", relief="flat", bd=0,
             )
             btn.grid(row=0, column=i, padx=2)
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
+            btn.bind("<Enter>", lambda e, b=btn, n=name: self._tb_tool_enter(n, b))
             btn.bind("<Leave>", lambda e, b=btn, n=name: self._restool_hover_tb(n, b))
             btn.bind("<Button-1>", lambda e, n=name: self._select_tool(n))
             self._tool_btns[name] = btn
         self._refresh_tool_btns()
 
         # 分隔
-        tk.Frame(bar, width=1, height=22, bg=TB_BTN_BORDER).pack(side="left", padx=6)
+        tk.Frame(bar, width=SEP_W, height=SEP_H, bg=DARK["sep"]).pack(
+            side="left", padx=6)
 
         # --- 颜色 ---
         self.color_btn = tk.Button(
-            bar, text="", fg=TB_FG, bg=self.color,
+            bar, text="", fg=DARK["fg"], bg=self.color,
             relief="flat", bd=1, width=4, height=1, cursor="hand2",
             activebackground=self.color, command=self._pick_color,
-            highlightthickness=1, highlightbackground=TB_BTN_BORDER,
+            highlightthickness=1, highlightbackground=DARK["sep"],
         )
         self.color_btn.pack(side="left", ipady=4, padx=2)
 
@@ -271,29 +272,30 @@ class Editor:
         spin = tk.Spinbox(
             bar, from_=1, to=30, width=3, textvariable=self.width_var,
             font=FONT, relief="solid", bd=1,
-            highlightthickness=1, highlightbackground=TB_BTN_BORDER,
-            bg=TB_BTN_BG, fg=TB_FG,
+            highlightthickness=1, highlightbackground=DARK["sep"],
+            bg=DARK["btn"], fg=DARK["fg"],
         )
         spin.pack(side="left", padx=4, ipady=1)
 
         # --- 背景色 ---
         self.canvas_bg_btn = tk.Button(
-            bar, text="", fg=TB_FG, bg=self.canvas_bg,
+            bar, text="", fg=DARK["fg"], bg=self.canvas_bg,
             relief="flat", bd=1, width=4, height=1, cursor="hand2",
             activebackground=self.canvas_bg, command=self._pick_canvas_bg,
-            highlightthickness=1, highlightbackground=TB_BTN_BORDER,
+            highlightthickness=1, highlightbackground=DARK["sep"],
         )
         self.canvas_bg_btn.pack(side="left", ipady=4, padx=2)
 
         # 分隔
-        tk.Frame(bar, width=1, height=22, bg=TB_BTN_BORDER).pack(side="left", padx=6)
+        tk.Frame(bar, width=SEP_W, height=SEP_H, bg=DARK["sep"]).pack(
+            side="left", padx=6)
 
         # --- 操作按钮 ---
-        self._tb_action_btn(bar, "↩", "撤销", self._undo)
-        self._tb_action_btn(bar, "⧉", "复制", self._copy)
-        self._tb_action_btn(bar, "🔍", "识别", self._ocr)
-        self._tb_action_btn(bar, "💾", "保存", self._save, primary=True)
-        self._tb_action_btn(bar, "✕", "关闭", self._close)
+        self._tb_action_btn(bar, "undo", "撤销", self._undo)
+        self._tb_action_btn(bar, "copy", "复制", self._copy)
+        self._tb_action_btn(bar, "ocr", "识别", self._ocr)
+        self._tb_action_btn(bar, "save", "保存", self._save, primary=True)
+        self._tb_action_btn(bar, "cancel", "关闭", self._close)
 
         # 自由移动：按住左键拖动时跟随光标
         self.toolbar.bind("<ButtonPress-1>", self._tb_start_follow)
@@ -324,28 +326,61 @@ class Editor:
         self._tb_min_w = 0
         self.root.after_idle(self._measure_toolbar_width)
 
-    def _tb_action_btn(self, parent, icon, label, command, primary=False):
+    def _tb_redraw_bg(self):
+        """重算圆角背景图（窗口 resize 时触发）。"""
+        w = self.toolbar.winfo_width()
+        h = self.toolbar.winfo_height()
+        if w < 2 or h < 2:
+            return
+        if self._tb_bg_photo is not None:
+            self._tb_bg_photo = None
+        self._tb_bg_photo = rounded_rect_photo(
+            self.toolbar, w, h, TB_RADIUS, DARK["surface"], DARK["border"])
+        self._tb_canvas.delete("bg")
+        self._tb_canvas.create_image(0, 0, image=self._tb_bg_photo,
+                                     anchor="nw", tags="bg")
+
+    def _tb_tool_enter(self, name, btn):
+        """工具按钮 hover：切图标颜色（选中态由 _restool_hover_tb 恢复）。"""
+        icon_name = self.TOOL_ICONS[name]
+        if name == self.tool:
+            return  # 选中态保持高亮
+        btn.configure(image=icon.render(icon_name, DARK["hover_fg"],
+                                        master=self.toolbar),
+                      bg=DARK["hover"])
+
+    def _tb_action_btn(self, parent, name, label, command, primary=False):
         """工具栏操作按钮（图标 + 文字）。"""
-        TB_BG = "#2b2f36"
-        TB_BTN_BG = "#3a3f47"
-        bg = "#4a90e2" if primary else TB_BTN_BG
-        fg = "#ffffff" if primary else "#f5f6f8"
-        b = tk.Label(
-            parent, text=f"{icon} {label}",
-            fg=fg, bg=bg, font=("Microsoft YaHei UI", 9),
-            padx=7, pady=4, cursor="hand2",
-        )
-        b.pack(side="left", padx=2)
-        b.bind("<Enter>", lambda e, bb=b, p=primary: bb.configure(bg="#3d7dc9" if p else "#4a5160"))
-        b.bind("<Leave>", lambda e, bb=b, p=primary: bb.configure(bg=bg))
-        b.bind("<Button-1>", lambda e, c=command: c())
+        bg = DARK["primary"] if primary else DARK["btn"]
+        fg = "#ffffff" if primary else DARK["fg"]
+        icon_color = "#ffffff" if primary else DARK["fg"]
+        # Frame 内放图标 Label + 文字 Label（tkinter Label 不能同时 image+text）
+        frame = tk.Frame(parent, bg=bg)
+        frame.pack(side="left", padx=2)
+        icon_label = tk.Label(
+            frame, image=icon.render(name, icon_color, master=self.toolbar),
+            bg=bg)
+        icon_label.pack(side="left", padx=(7, 4), pady=4)
+        text_label = tk.Label(
+            frame, text=label, fg=fg, bg=bg, font=FONT)
+        text_label.pack(side="left", padx=(0, 7), pady=4)
+        frame.bind("<Enter>", lambda e, f=frame, p=primary:
+                   f.configure(bg=DARK["primary_hover"] if p else DARK["btn_hover"]))
+        frame.bind("<Leave>", lambda e, f=frame, p=primary, bg=bg:
+                   f.configure(bg=bg))
+        frame.bind("<Button-1>", lambda e, c=command: c())
 
     def _restool_hover_tb(self, name, btn):
         """工具按钮离开时恢复样式（选中态保持高亮）。"""
+        icon_name = self.TOOL_ICONS[name]
         if name == self.tool:
-            btn.configure(bg="#4a90e2", fg="#ffffff")
+            btn.configure(image=icon.render(icon_name, DARK["active_fg"],
+                                            master=self.toolbar),
+                          bg=DARK["active"])
         else:
-            btn.configure(bg="#3a3f47", fg="#f5f6f8")
+            btn.configure(image=icon.render(icon_name, DARK["fg"],
+                                            master=self.toolbar),
+                          bg=DARK["btn"])
 
     def _tb_start_follow(self, event):
         """按住左键：记录鼠标相对工具栏左上角的偏移，开始自由移动。"""
@@ -526,10 +561,15 @@ class Editor:
             self._apply_tool_style(name, btn)
 
     def _apply_tool_style(self, name, btn):
+        icon_name = self.TOOL_ICONS[name]
         if name == self.tool:
-            btn.configure(bg="#4a90e2", fg="#ffffff")
+            btn.configure(image=icon.render(icon_name, DARK["active_fg"],
+                                            master=self.toolbar),
+                          bg=DARK["active"])
         else:
-            btn.configure(bg="#3a3f47", fg="#f5f6f8")
+            btn.configure(image=icon.render(icon_name, DARK["fg"],
+                                            master=self.toolbar),
+                          bg=DARK["btn"])
 
     def _sync_clipboard(self):
         """把当前编辑结果同步到剪贴板（静默，失败不影响编辑）。"""

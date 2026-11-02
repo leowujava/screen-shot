@@ -114,46 +114,84 @@ def mosaic(img, left, top, right, bottom, block=24):
     return result
 
 
+def _supersample(img, draw_fn, scale=4):
+    """超采样抗锯齿：在 scale 倍大的透明层上绘制，再缩回原尺寸。
+
+    用 LANCZOS 缩小时做面积平均，边缘产生平滑的半透明过渡（灰度渐晕），
+    消除锯齿。draw_fn(d, s) 接收放大后的 Draw 对象和缩放系数，
+    负责在放大图上完成绘制。返回与原图同尺寸/模式的新图。
+    """
+    layer = Image.new("RGBA", (img.width * scale, img.height * scale), (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer), scale)
+    small = layer.resize((img.width, img.height), Image.LANCZOS)
+    out = img.convert("RGBA")
+    out.alpha_composite(small)
+    return out.convert(img.mode)
+
+
+def _supersample_inplace(img, draw_fn, scale=4):
+    """超采样绘制后把结果写回 img（保持原对象，供逐段画笔累积）。"""
+    result = _supersample(img, draw_fn, scale)
+    img.paste(result, (0, 0))
+    return img
+
+
 def draw_arrow(img, start, end, color, width):
-    """在 img 上画箭头（线条 + 三角箭头头）。
+    """在 img 上画箭头（线条 + 三角箭头头），4x 超采样抗锯齿（原地修改）。
 
     start/end 为 (x, y) 元组，color 为颜色，width 为线宽。
     """
-    d = ImageDraw.Draw(img)
     x1, y1 = start
     x2, y2 = end
-    d.line([start, end], fill=color, width=width)
     length = math.hypot(x2 - x1, y2 - y1)
-    if length < 1:
-        return
-    angle = math.atan2(y2 - y1, x2 - x1)
-    head = 12
-    a1 = angle + math.pi * 0.8
-    a2 = angle - math.pi * 0.8
-    p1 = (x2 + head * math.cos(a1), y2 + head * math.sin(a1))
-    p2 = (x2 + head * math.cos(a2), y2 + head * math.sin(a2))
-    d.polygon([end, p1, p2], fill=color)
+    # 箭头头：尖端在 end 处、朝线条方向；底边两点在 end 后方。
+    # 头长 = max(16, 3.5x 线宽)（仿参考图的大三角头），
+    # 开口角 ±0.55 rad（~31.5°，宽而钝的实心三角）
+    head = max(16.0, 3.5 * width) if length >= 1 else 0
+    ang = math.atan2(y2 - y1, x2 - x1) if length >= 1 else 0
+    p1 = (x2 - head * math.cos(ang - 0.55), y2 - head * math.sin(ang - 0.55)) if length >= 1 else (x2, y2)
+    p2 = (x2 - head * math.cos(ang + 0.55), y2 - head * math.sin(ang + 0.55)) if length >= 1 else (x2, y2)
+
+    def draw(d, s):
+        d.line([(x1 * s, y1 * s), (x2 * s, y2 * s)], fill=color, width=max(1, int(width * s)))
+        if length >= 1:
+            d.polygon([(x2 * s, y2 * s), (p1[0] * s, p1[1] * s), (p2[0] * s, p2[1] * s)],
+                      fill=color)
+
+    _supersample_inplace(img, draw)
+    return img
 
 
 def draw_rect(img, box, color, width):
-    """在 img 上画 outline 矩形。box 已归一化 (x0, y0, x1, y1)。"""
-    d = ImageDraw.Draw(img)
-    d.rectangle(box, outline=color, width=width)
+    """在 img 上画 outline 矩形（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。"""
+    def draw(d, s):
+        d.rectangle([v * s for v in box], outline=color, width=max(1, int(width * s)))
+
+    _supersample_inplace(img, draw)
+    return img
 
 
 def draw_ellipse(img, box, color, width):
-    """在 img 上画 outline 椭圆。box 已归一化 (x0, y0, x1, y1)。"""
-    d = ImageDraw.Draw(img)
-    d.ellipse(box, outline=color, width=width)
+    """在 img 上画 outline 椭圆（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。"""
+    def draw(d, s):
+        d.ellipse([v * s for v in box], outline=color, width=max(1, int(width * s)))
+
+    _supersample_inplace(img, draw)
+    return img
 
 
 def draw_brush(img, points, color, width):
-    """在 img 上画折线画笔。points 为 [(x, y), ...]。"""
-    d = ImageDraw.Draw(img)
-    if len(points) == 1:
-        d.point(points[0], fill=color)
-    else:
-        d.line(points, fill=color, width=width)
+    """在 img 上画折线画笔（4x 超采样抗锯齿，圆头线帽）。points 为 [(x, y), ...]。"""
+    def draw(d, s):
+        if len(points) == 1:
+            d.ellipse([(points[0][0] - width / 2) * s, (points[0][1] - width / 2) * s,
+                       (points[0][0] + width / 2) * s, (points[0][1] + width / 2) * s],
+                      fill=color)
+        else:
+            d.line([(x * s, y * s) for x, y in points], fill=color,
+                   width=max(1, int(width * s)), joint="curve")
+
+    return _supersample_inplace(img, draw)
 
 
 def draw_text(img, pos, text, color, font_size):

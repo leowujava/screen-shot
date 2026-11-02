@@ -5,13 +5,23 @@ import tkinter as tk
 SELECT_DONE = "done"      # 用户确认选区（Enter / 双击 / 工具条确认）
 SELECT_CANCEL = "cancel"  # 用户取消（Esc / 右键 / 工具条取消）
 
-# 深色工具条配色（与飞书截图工具条风格一致）
-TB_BG = "#2b2f36"
-TB_FG = "#f5f6f8"
-TB_HOVER = "#4a90e2"
-TB_HOVER_FG = "#ffffff"
-TB_SEP = "#4a5160"
-TB_FONT = ("Microsoft YaHei UI", 9)
+# 工具条配色（白底 + 蓝色高亮，仿飞书截图工具条）
+TB_BG = "#ffffff"
+TB_FG = "#1f2329"
+TB_HOVER = "#f2f3f5"        # 按钮 hover 浅灰
+TB_SEP = "#e5e6eb"
+TB_DISABLED = "#c9cdd4"     # 禁用（select 模式）
+TB_ACTIVE = "#4a90e2"       # 选中工具（蓝圈/蓝字）
+TB_FONT = ("Microsoft YaHei UI", 10)
+
+# 确认 / 取消 图标颜色
+TB_CONFIRM_FG = "#22c55e"
+TB_CANCEL_FG = "#f5484d"
+
+# 预设色板（仿工具条下方弹出的颜色行；第一色 = 默认画图色，截图箭头红）
+PALETTE = ["#f5484d", "#3370ff", "#86909c",
+           "#4e5969", "#ffab00", "#22c55e",
+           "#3490ff", "#1f2329", "#a0a6b0", "#ffffff"]
 
 # 尺寸标签配色
 LABEL_BG = "#2b2f36"
@@ -62,7 +72,7 @@ class Selector:
                 "e": "sb_right_arrow", "se": "fleur", "s": "sb_down_arrow",
                 "sw": "crosshair", "w": "sb_left_arrow", "move": "fleur"}
 
-    # 标注工具
+    # 标注工具（取色已集成到颜色面板，不在主工具条）
     TOOLS = ("brush", "rect", "ellipse", "arrow", "mosaic", "text")
     TOOL_ICONS = {"brush": "✏", "rect": "▭", "ellipse": "◯", "arrow": "↗",
                   "mosaic": "▦", "text": "T"}
@@ -95,15 +105,24 @@ class Selector:
         self._bg_photo = None
         self._tb_visible = False
         self._tb_size = None
+        self._tb_row_state = 0
+        self._tb_active_tool = "brush"
+        self._color_row = None
+        self._color_win = None
+        self._color_btns = {}
+        self._eyedrop_btn = None
 
-        # 标注状态
+        # 标注状态（默认颜色 = 色板第一色，与截图中箭头红色一致）
         self.tool = "brush"
-        self.color = "#ff0000"
+        self.color = PALETTE[0]
         self.width_attr = 3
+        self._prev_tool = "brush"  # 取色前使用的工具，取色后恢复
         self.undo = UndoStack(maxlen=10)
         self.drawing = False
         self.draw_start = None
         self._brush_last = None
+        self._eyedrop_mode = False
+        self._eyedrop_ring = None
         self._preview_id = None
         self._tool_btns = {}
         self._tb_btns = {}
@@ -213,69 +232,153 @@ class Selector:
         bar = tk.Frame(self.tb_win, bg=TB_BG)
         bar.pack(fill="x", padx=4, pady=3)
 
-        # 工具按钮
+        # 工具按钮（图标 + hover 浅灰 + 选中蓝色）
         for tool in self.TOOLS:
             b = tk.Label(bar, text=self.TOOL_ICONS[tool],
-                         fg=TB_FG, bg=TB_BG, font=TB_FONT, padx=6, pady=2,
-                         cursor="hand2")
+                         fg=TB_FG, bg=TB_BG, font=TB_FONT,
+                         padx=7, pady=3, cursor="hand2")
             b.pack(side="left", padx=1)
-            b.bind("<Enter>", lambda e, bb=b: bb.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
-            b.bind("<Leave>", lambda e, bb=b: bb.configure(bg=TB_BG, fg=TB_FG))
+            b.bind("<Enter>", lambda e, bb=b: self._tb_hover(bb, True))
+            b.bind("<Leave>", lambda e, bb=b: self._tb_hover(bb, False))
             b.bind("<Button-1>", lambda e, t=tool: self._select_tool(t))
             self._tool_btns[tool] = b
 
         # 分隔
-        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=5)
+        self._tb_sep(bar)
 
-        # 颜色
+        # 颜色（单击弹出预设色板，双击打开系统取色器）
         color_btn = tk.Label(bar, text="🎨", fg=TB_FG, bg=TB_BG, font=TB_FONT,
-                             padx=4, pady=2, cursor="hand2")
+                             padx=7, pady=3, cursor="hand2")
         color_btn.pack(side="left", padx=1)
-        color_btn.bind("<Enter>", lambda e: color_btn.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
-        color_btn.bind("<Leave>", lambda e: color_btn.configure(bg=TB_BG, fg=TB_FG))
-        color_btn.bind("<Button-1>", lambda e: self._pick_color())
+        color_btn.bind("<Enter>", lambda e: self._tb_hover(color_btn, True))
+        color_btn.bind("<Leave>", lambda e: self._tb_hover(color_btn, False))
+        color_btn.bind("<Button-1>", lambda e: self._toggle_color_row())
+        color_btn.bind("<Double-Button-1>", lambda e: self._pick_color())
+        self._tb_btns["color"] = color_btn
 
         # 粗细
         self._width_var = tk.StringVar(master=self.root, value="3")
         spin = tk.Spinbox(bar, from_=1, to=30, width=3,
                           textvariable=self._width_var, font=TB_FONT,
-                          bg=TB_BG, fg=TB_FG, bd=0, relief="flat")
-        spin.pack(side="left", padx=2)
+                          bg=TB_BG, fg=TB_FG, bd=0, relief="flat",
+                          highlightthickness=1, highlightbackground=TB_SEP)
+        spin.pack(side="left", padx=3)
         spin.bind("<FocusOut>", lambda e: self._on_width_change())
         spin.bind("<Return>", lambda e: self._on_width_change())
 
         # 撤销
         undo_btn = tk.Label(bar, text="↩", fg=TB_FG, bg=TB_BG, font=TB_FONT,
-                            padx=4, pady=2, cursor="hand2")
-        undo_btn.pack(side="left", padx=2)
-        undo_btn.bind("<Enter>", lambda e: undo_btn.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
-        undo_btn.bind("<Leave>", lambda e: undo_btn.configure(bg=TB_BG, fg=TB_FG))
+                            padx=7, pady=3, cursor="hand2")
+        undo_btn.pack(side="left", padx=1)
+        undo_btn.bind("<Enter>", lambda e: self._tb_hover(undo_btn, True))
+        undo_btn.bind("<Leave>", lambda e: self._tb_hover(undo_btn, False))
         undo_btn.bind("<Button-1>", lambda e: self._undo())
 
         # 分隔
-        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=5)
+        self._tb_sep(bar)
 
         # 识别文字
         self._tb_btn(bar, "ocr", "🔍 识别", self._ocr)
 
         # 分隔
-        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=5)
+        self._tb_sep(bar)
 
-        # 确认/复制/保存/取消
-        self._tb_btn(bar, "confirm", "✓ 确认", self._confirm)
+        # 确认（绿）/ 复制 / 保存 / 取消（红）
+        self._tb_btn(bar, "confirm", "✓ 确认", self._confirm, fg=TB_CONFIRM_FG)
         self._tb_btn(bar, "copy", "⧉ 复制", self._copy)
         self._tb_btn(bar, "save", "💾 保存", self._save)
-        self._tb_btn(bar, "cancel", "✕ 取消", self._cancel)
+        self._tb_btn(bar, "cancel", "✕ 取消", self._cancel, fg=TB_CANCEL_FG)
 
-    def _tb_btn(self, parent, key, text, command):
-        b = tk.Label(parent, text=text, fg=TB_FG, bg=TB_BG, font=TB_FONT,
-                     padx=6, pady=2, cursor="hand2")
+    def _tb_sep(self, bar):
+        tk.Frame(bar, width=1, height=18, bg=TB_SEP).pack(side="left", padx=6)
+
+    def _tb_hover(self, b, enter):
+        """按钮 hover 浅灰底色（选中工具按钮保持蓝色）。"""
+        if enter:
+            if b in self._tool_btns.values() and self.tool == self._tb_active_tool:
+                return  # 选中按钮保持高亮
+            b.configure(bg=TB_HOVER)
+        else:
+            if b in self._tool_btns.values() and self.tool == self._tb_active_tool:
+                return
+            b.configure(bg=TB_BG)
+
+    def _tb_btn(self, parent, key, text, command, fg=None):
+        fg = fg or TB_FG
+        b = tk.Label(parent, text=text, fg=fg, bg=TB_BG, font=TB_FONT,
+                     padx=7, pady=3, cursor="hand2")
         b.pack(side="left", padx=1)
-        b.bind("<Enter>", lambda e, bb=b: bb.configure(bg=TB_HOVER, fg=TB_HOVER_FG))
-        b.bind("<Leave>", lambda e, bb=b: bb.configure(bg=TB_BG, fg=TB_FG))
+        b.bind("<Enter>", lambda e, bb=b: bb.configure(bg=TB_HOVER))
+        b.bind("<Leave>", lambda e, bb=b: bb.configure(bg=TB_BG))
         b.bind("<Button-1>", lambda e, c=command: c())
         self._tb_btns[key] = b
         return b
+
+    def _toggle_color_row(self):
+        """在工具条内弹出/收起预设色板行（仿工具条截图）。"""
+        if self._color_row is not None:
+            self._close_color_row()
+            return
+        self._color_row = tk.Frame(self.tb_win, bg=TB_BG, bd=1,
+                                   highlightthickness=1,
+                                   highlightbackground=TB_SEP)
+        self._color_row.pack(fill="x", padx=6, pady=(0, 4))
+        # 取色（吸管）按钮：点击后进入取色模式，点画布取色
+        self._eyedrop_btn = tk.Label(self._color_row, text="💉", fg=TB_FG, bg=TB_BG,
+                                     font=TB_FONT, padx=4, pady=1, cursor="hand2")
+        self._eyedrop_btn.pack(side="left", padx=(2, 4))
+        self._eyedrop_btn.bind("<Enter>", lambda e: self._eyedrop_btn.configure(bg=TB_HOVER))
+        self._eyedrop_btn.bind("<Leave>", lambda e: self._eyedrop_btn.configure(bg=TB_BG))
+        self._eyedrop_btn.bind("<Button-1>", lambda e: self._start_eyedrop())
+        # 色板
+        for c in PALETTE:
+            b = tk.Label(self._color_row, bg=c, fg=c, width=2, height=1,
+                         cursor="hand2", highlightthickness=1,
+                         highlightbackground="#d0d3d9" if c == "#ffffff" else "#c9cdd4")
+            b.pack(side="left", padx=2, pady=3)
+            b.bind("<Button-1>", lambda e, col=c: self._set_color(col))
+            self._color_btns[c] = b
+        self._update_color_row()
+        self.tb_win.wm_attributes("-topmost", True)
+        self.tb_win.update_idletasks()
+
+    def _start_eyedrop(self):
+        """从颜色面板启动取色：进入取色模式 + 关闭色板 + 提示用户点画布。"""
+        # 记住取色前的工具，取色完成后恢复
+        if self.tool != "eyedrop":
+            self._prev_tool = self.tool
+        self.tool = "eyedrop"
+        self._tb_active_tool = "eyedrop"
+        self._eyedrop_mode = True
+        self._close_color_row()
+        self.canvas.configure(cursor="crosshair")
+
+    def _close_color_row(self):
+        if self._color_row is not None:
+            try:
+                self._color_row.destroy()
+            except tk.TclError:
+                pass
+            self._color_row = None
+            self._color_btns = {}
+            self._eyedrop_btn = None
+
+    def _set_color(self, color):
+        self.color = color
+        self._update_color_row()
+        # 颜色变化后重渲染当前标注（线条/文字颜色即时生效）
+        if self._region_img is not None and self._mode == "adjust":
+            self._render_all()
+
+    def _update_color_row(self):
+        """给当前选中颜色的色块加蓝圈高亮。"""
+        if self._color_row is None:
+            return
+        for c, b in self._color_btns.items():
+            if c.lower() == self.color.lower():
+                b.configure(highlightbackground=TB_ACTIVE, highlightthickness=2)
+            else:
+                b.configure(highlightbackground="#c9cdd4", highlightthickness=1)
 
     def _tb_show(self, pos, size):
         if not self._tb_visible:
@@ -286,6 +389,13 @@ class Selector:
             self.tb_win.update_idletasks()
             self._tb_visible = True
             self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
+        # 颜色行弹出/收起会改变窗口尺寸：只在行状态变化时重新测量，
+        # 避免每帧拖动都触发同步布局计算（拖动性能回归测试的根因）
+        row_state = 1 if self._color_row is not None else 0
+        if self._tb_size is None or self._tb_row_state != row_state:
+            self.tb_win.update_idletasks()
+            self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
+            self._tb_row_state = row_state
         x, y = pos[0], pos[1]
         w, h = size[2], size[3]
         tb_w, tb_h = self._tb_size
@@ -305,6 +415,7 @@ class Selector:
     def _tb_hide(self):
         self._tb_visible = False
         self._tb_size = None
+        self._close_color_row()
         if self.tb_win is not None and self.tb_win.winfo_exists():
             try:
                 self.tb_win.withdraw()
@@ -333,10 +444,13 @@ class Selector:
         """启用/禁用工具按钮。禁用时灰色 + 不响应。"""
         for tool, b in self._tool_btns.items():
             if enabled:
-                b.configure(fg=TB_FG, bg=TB_BG, cursor="hand2")
+                if tool == self.tool:
+                    b.configure(fg=TB_ACTIVE, bg=TB_BG, cursor="hand2")
+                else:
+                    b.configure(fg=TB_FG, bg=TB_BG, cursor="hand2")
                 b.bind("<Button-1>", lambda e, t=tool: self._select_tool(t))
             else:
-                b.configure(fg=TB_SEP, bg=TB_BG, cursor="arrow")
+                b.configure(fg=TB_DISABLED, bg=TB_BG, cursor="arrow")
                 b.bind("<Button-1>", lambda e: None)
 
     # ------------------------------------------------------------------ #
@@ -641,6 +755,9 @@ class Selector:
         return None
 
     def _on_press(self, event):
+        # 点击工具条区域时忽略（工具条按钮有自己的 <Button-1> 处理）
+        if self._is_over_toolbar(event.x, event.y):
+            return
         if self._mode == "select":
             # 按下立刻创建最小框并进入 adjust 模式
             self.start = (event.x, event.y)
@@ -674,6 +791,13 @@ class Selector:
                 self._input_text(rx, ry)
                 self.drawing = False
                 self.draw_start = None
+                return
+            if self.tool == "eyedrop":
+                self._eyedrop_mode = True
+                self.drawing = True
+                self.draw_start = (rx, ry)
+                self.canvas.configure(cursor="crosshair")
+                self._eyedrop_sample(rx, ry)
                 return
             self.drawing = True
             self.draw_start = (rx, ry)
@@ -738,19 +862,46 @@ class Selector:
             rx, ry = event.x - l, event.y - t
             rx = max(0, min(rx, r - l - 1))
             ry = max(0, min(ry, b - t - 1))
-            if self.tool == "brush":
+            if self.tool == "eyedrop":
+                # 拖动持续取色 + 取色环跟随
+                self._eyedrop_sample(rx, ry)
+                self._eyedrop_ring_move(rx + l, ry + t)
+            elif self.tool == "brush":
                 draw_brush(self._region_img, [self._brush_last, (rx, ry)], self.color, self.width_attr)
                 self._brush_last = (rx, ry)
                 self._render_region(l, t)
             else:
                 sx, sy = self.draw_start
-                self._draw_preview(sx + l, sy + t, rx + l, ry + t)
+                # 椭圆：按住 Alt 约束正圆预览
+                if self.tool == "ellipse" and self._alt_pressed(event):
+                    ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
+                    self._draw_preview(l + min(ex0, ex1), t + min(ey0, ey1),
+                                       l + max(ex0, ex1), t + max(ey0, ey1))
+                else:
+                    self._draw_preview(sx + l, sy + t, rx + l, ry + t)
 
     def _on_release(self, event):
         self.start = None
         self._drag_op = None
         self._drag_start = None
         self._drag_region = None
+        # 取色结束：清理取色环 + 重置 drawing + 恢复之前的工具
+        if getattr(self, "_eyedrop_mode", False):
+            self._eyedrop_mode = False
+            self.drawing = False
+            self.draw_start = None
+            self._clear_eyedrop_ring()
+            # 恢复取色前使用的工具
+            self.tool = self._prev_tool
+            self._tb_active_tool = self._prev_tool
+            # 刷新工具按钮高亮
+            for tool, b in self._tool_btns.items():
+                if tool == self.tool:
+                    b.configure(fg=TB_ACTIVE, bg=TB_BG)
+                else:
+                    b.configure(fg=TB_FG, bg=TB_BG)
+            self.canvas.configure(cursor="crosshair")
+            return
         self.canvas.configure(cursor="crosshair")
         self._hide_crosshair()
         # 画框结束：清理轻量渲染，切换到完整渲染
@@ -786,8 +937,12 @@ class Selector:
         elif self.tool == "ellipse":
             if abs(rx - sx) < 1 and abs(ry - sy) < 1:
                 return
+            # 按住 Alt 约束为正圆
+            ex0, ey0, ex1, ey1 = sx, sy, rx, ry
+            if self._alt_pressed(event):
+                ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
             draw_ellipse(self._region_img,
-                         [min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry)],
+                         [min(ex0, ex1), min(ey0, ey1), max(ex0, ex1), max(ey0, ey1)],
                          self.color, self.width_attr)
         elif self.tool == "arrow":
             if abs(rx - sx) < 1 and abs(ry - sy) < 1:
@@ -802,6 +957,27 @@ class Selector:
         # 标注完成后确保工具条不被画布窗口遮挡（不 lift，避免抢焦点）
         if self.tb_win is not None and self.tb_win.winfo_exists():
             self.tb_win.wm_attributes("-topmost", True)
+
+    @staticmethod
+    def _alt_pressed(event=None):
+        """事件发生时是否真正按住 Alt（用于约束正圆/正方形）。"""
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                VK_MENU = 0x12  # Alt
+                return bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
+            except Exception:
+                pass
+        state = getattr(event, "state", 0) or 0
+        return bool(state & 0x20000)
+
+    def _constrain_ellipse(self, x0, y0, x1, y1):
+        """按住 Alt 时约束椭圆为正圆：取横纵位移较大值作为边长。"""
+        dx, dy = x1 - x0, y1 - y0
+        d = max(abs(dx), abs(dy))
+        sx = 1 if dx >= 0 else -1
+        sy = 1 if dy >= 0 else -1
+        return (x0, y0, x0 + sx * d, y0 + sy * d)
 
     def _draw_preview(self, x0, y0, x1, y1):
         self._clear_preview()
@@ -886,6 +1062,8 @@ class Selector:
 
     def _select_tool(self, name):
         self.tool = name
+        self._prev_tool = name
+        self._tb_active_tool = name
         # 确保工具条保持在最前（防止被画布窗口遮挡），但不用 lift()
         # （lift 会抢焦点，导致画布点击被吞）。
         # 只重新设置 -topmost，不改变焦点。
@@ -893,9 +1071,63 @@ class Selector:
             self.tb_win.wm_attributes("-topmost", True)
         for tool, b in self._tool_btns.items():
             if tool == name:
-                b.configure(bg=TB_HOVER, fg=TB_HOVER_FG)
+                b.configure(fg=TB_ACTIVE, bg=TB_BG)
             else:
-                b.configure(bg=TB_BG, fg=TB_FG)
+                b.configure(fg=TB_FG, bg=TB_BG)
+        # 切换工具时清除取色残留状态（取色不是主工具条工具，但可能正在取色中）
+        if self._eyedrop_mode:
+            self._eyedrop_mode = False
+            self.drawing = False
+            self.draw_start = None
+            self._clear_eyedrop_ring()
+
+    # ------------------------------------------------------------------ #
+    # 取色（吸管）
+    # ------------------------------------------------------------------ #
+
+    def _eyedrop_sample(self, rx, ry):
+        """取 (rx, ry) 处像素颜色设为当前画图颜色，并在该处画取色环。
+
+        rx/ry 为选区图（_region_img）内坐标。
+        """
+        if self._region_img is None:
+            return
+        px = self._region_img.getpixel((rx, ry))
+        if isinstance(px, int):
+            hexcolor = f"#{px:06x}"
+        else:
+            hexcolor = "#%02x%02x%02x" % px[:3]
+        self.color = hexcolor
+        self._update_color_row()
+        # 在选区窗口坐标处画取色环（canvas 坐标 = 选区坐标 + 选区偏移）
+        l, t = self._region[0], self._region[1]
+        self._eyedrop_ring_move(rx + l, ry + t)
+
+    def _eyedrop_ring_move(self, cx, cy):
+        """取色环跟随到 canvas 坐标 (cx, cy)。"""
+        if self._eyedrop_ring is None:
+            self._eyedrop_ring = self.canvas.create_oval(
+                cx - 10, cy - 10, cx + 10, cy + 10,
+                outline="white", width=2)
+        else:
+            self.canvas.coords(self._eyedrop_ring,
+                               cx - 10, cy - 10, cx + 10, cy + 10)
+        try:
+            self.canvas.itemconfig(self._eyedrop_ring, outline="white")
+        except tk.TclError:
+            pass
+        try:
+            self.canvas.tag_raise(self._eyedrop_ring)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _clear_eyedrop_ring(self):
+        if self._eyedrop_ring is not None:
+            try:
+                self.canvas.delete(self._eyedrop_ring)
+            except (tk.TclError, AttributeError):
+                pass
+            self._eyedrop_ring = None
 
     def _pick_color(self):
         from tkinter import colorchooser

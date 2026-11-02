@@ -7,6 +7,11 @@ import pytest
 from selector import Selector
 
 
+def _close(a, b, tol=40):
+    """颜色分量接近判定（抗锯齿后边缘存在灰度过渡，允许容差）。"""
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
 @pytest.fixture
 def fake_root():
     """让 Selector 使用 mock 的 Tk 窗口，不创建真实 GUI。
@@ -431,7 +436,7 @@ def test_brush_annotation_draws_on_region_img(fake_root):
     sel._on_drag(E(60, 60))
     sel._on_release(E(60, 60))
     # 画笔线条经过 (30, 30)
-    assert sel._region_img.getpixel((20, 20)) == (0, 0, 0)
+    assert _close(sel._region_img.getpixel((20, 20)), (0, 0, 0), 30)
 
 
 def test_rect_annotation_draws_on_region_img(fake_root):
@@ -449,7 +454,7 @@ def test_rect_annotation_draws_on_region_img(fake_root):
         def __init__(self, x, y): self.x, self.y = x, y
     sel._on_press(E(20, 20))
     sel._on_release(E(80, 80))
-    assert sel._region_img.getpixel((10, 40)) == (255, 0, 0)
+    assert _close(sel._region_img.getpixel((10, 40)), (255, 0, 0), 25)
 
 
 def test_undo_reverts_annotation(fake_root):
@@ -491,6 +496,62 @@ def test_mosaic_annotation(fake_root):
     has_mid = any(sel._region_img.getpixel((x, y)) not in ((0, 0, 0), (255, 255, 255))
                   for x in range(0, 100, 5) for y in range(0, 100, 5))
     assert has_mid
+
+
+def test_eyedrop_sets_color(fake_root):
+    """从颜色面板启动取色，点击选区应取该像素颜色设为当前画图颜色。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    d = ImageDraw.Draw(full)
+    d.rectangle([20, 20, 80, 80], fill=(0, 128, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                    on_select=lambda r, i: None,
+                    on_copy=lambda r, i: None,
+                    on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (0, 0, 100, 100)
+    sel._init_region_img()
+    sel.color = "#ffffff"
+    # 从颜色面板启动取色
+    sel._start_eyedrop()
+    assert sel.tool == "eyedrop"
+    assert sel._eyedrop_mode is True
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    # 点击蓝色方块中心 (50, 50)
+    sel._on_press(E(50, 50))
+    sel._on_release(E(50, 50))
+    assert sel.color == "#0080ff", f"取色结果 {sel.color} != #0080ff"
+    # 取色后应恢复之前的工具
+    assert sel.tool == "brush"
+
+
+def test_eyedrop_switch_tool_after_use(fake_root):
+    """从颜色面板取色后应能正常切换工具（回归：之前 _eyedrop_mode 卡死）。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    d = ImageDraw.Draw(full)
+    d.rectangle([20, 20, 80, 80], fill=(0, 128, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                    on_select=lambda r, i: None,
+                    on_copy=lambda r, i: None,
+                    on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (0, 0, 100, 100)
+    sel._init_region_img()
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+
+    # 1. 从颜色面板启动取色
+    sel._start_eyedrop()
+    # 2. 取色
+    sel._on_press(E(50, 50))
+    sel._on_release(E(50, 50))
+    assert sel.color == "#0080ff"
+    # 取色结束后 _eyedrop_mode 应已重置
+    assert sel._eyedrop_mode is False
+    # 取色后自动恢复之前的工具
+    assert sel.tool == "brush"
 
 
 def test_text_annotation(fake_root):
@@ -556,7 +617,7 @@ def test_render_all_in_select_mode_no_masks(fake_root):
 
 def test_toolbar_disabled_in_select_mode(fake_root):
     """select 模式下工具按钮应灰色禁用。"""
-    from selector import TB_SEP
+    from selector import TB_DISABLED
     sel = Selector(x=0, y=0, width=1920, height=1080, full_img=None,
                    on_select=lambda r, i: None,
                    on_copy=lambda r, i: None,
@@ -565,7 +626,7 @@ def test_toolbar_disabled_in_select_mode(fake_root):
     # 构造后应处于禁用状态
     for tool, b in sel._tool_btns.items():
         calls = [c for c in b.configure.call_args_list
-                 if c.kwargs.get("fg") == TB_SEP]
+                 if c.kwargs.get("fg") == TB_DISABLED]
         assert calls, f"工具 {tool} 在 select 模式未禁用（fg 不是灰色）"
 
 

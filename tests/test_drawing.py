@@ -9,13 +9,19 @@ def _blank(w=100, h=100, color=(255, 255, 255)):
     return Image.new("RGB", (w, h), color)
 
 
+def _close(a, b, tol=40):
+    """颜色分量接近判定（抗锯齿后边缘存在灰度过渡，允许容差）。"""
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+
 def test_draw_arrow_draws_line_and_head():
     img = _blank()
     draw_arrow(img, (10, 10), (90, 90), "#ff0000", width=3)
     # 中心点应为红色（箭头线条经过）
-    assert img.getpixel((50, 50)) == (255, 0, 0)
+    assert _close(img.getpixel((50, 50)), (255, 0, 0), 25)
     # 箭头尖端附近也应有红色
-    assert img.getpixel((88, 88)) == (255, 0, 0)
+    assert _close(img.getpixel((88, 88)), (255, 0, 0), 25)
     # 起点和终点之外的区域应保持白色
     assert img.getpixel((5, 5)) == (255, 255, 255)
     assert img.getpixel((95, 5)) == (255, 255, 255)
@@ -25,8 +31,8 @@ def test_draw_rect_draws_outline():
     img = _blank()
     draw_rect(img, (10, 10, 90, 90), "#00ff00", width=2)
     # 边框位置应为绿色
-    assert img.getpixel((10, 50)) == (0, 255, 0)
-    assert img.getpixel((50, 10)) == (0, 255, 0)
+    assert _close(img.getpixel((10, 50)), (0, 255, 0), 25)
+    assert _close(img.getpixel((50, 10)), (0, 255, 0), 25)
     # 内部应保持白色
     assert img.getpixel((50, 50)) == (255, 255, 255)
 
@@ -35,7 +41,7 @@ def test_draw_ellipse_draws_outline():
     img = _blank()
     draw_ellipse(img, (10, 10, 90, 90), "#0000ff", width=2)
     # 椭圆边界附近应有蓝色
-    assert img.getpixel((50, 11)) == (0, 0, 255)
+    assert _close(img.getpixel((50, 11)), (0, 0, 255), 25)
     # 内部应保持白色
     assert img.getpixel((50, 50)) == (255, 255, 255)
 
@@ -44,8 +50,8 @@ def test_draw_brush_draws_polylines():
     img = _blank()
     draw_brush(img, [(10, 10), (50, 50), (90, 90)], "#000000", width=3)
     # 折线经过的点应为黑色
-    assert img.getpixel((50, 50)) == (0, 0, 0)
-    assert img.getpixel((25, 25)) == (0, 0, 0)
+    assert _close(img.getpixel((50, 50)), (0, 0, 0), 30)
+    assert _close(img.getpixel((25, 25)), (0, 0, 0), 30)
     # 折线外的区域应保持白色
     assert img.getpixel((10, 90)) == (255, 255, 255)
 

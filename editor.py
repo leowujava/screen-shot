@@ -153,13 +153,13 @@ class Editor:
         self.on_close = on_close
         self.undo = UndoStack(maxlen=10)
         self.tool = "brush"
-        self.color = "#ff0000"
+        self.color = "#f5484d"  # 默认红色（与选区工具条默认色一致）
         # 画布背景色（可设置，持久化到设置文件）
         self.canvas_bg = _load_settings().get("canvas_bg", self.CANVAS_BG_DEFAULT)
         # 校验颜色字符串合法性，非法则回退默认
         if not _is_hex_color(self.canvas_bg):
             self.canvas_bg = self.CANVAS_BG_DEFAULT
-        self.width = 3
+        self.width = 5
         self.drawing = False
         self.draw_start = None
         self._brush_last = None

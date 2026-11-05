@@ -78,12 +78,10 @@ def _virtual_screen_origin():
 def do_region_capture():
     """框选区域截图（供快捷键和托盘调用）。
 
-    主线程正被 Tk 主循环 + 快捷键消息泵占用，不能阻塞，
-    因此耗时的整屏抓取放到工作线程，完成后把选区窗口调度回主线程。
-    使用虚拟桌面（所有屏幕合并），遮罩层覆盖全部屏幕。
+    先在工作线程获取桌面尺寸，再把选区窗口调度回主线程。
+    画出初始选区后才隐藏窗口并抓取屏幕，避免唤出时过早固定画面。
     """
     def worker():
-        full = capture_fullscreen()
         vsize = capture_virtual_screen_size()
         vx, vy = _virtual_screen_origin()
 
@@ -101,7 +99,8 @@ def do_region_capture():
             # 选区窗口覆盖整个虚拟桌面（所有屏幕）
             Selector(
                 x=vx, y=vy, width=vsize[0], height=vsize[1],
-                full_img=full,
+                full_img=None,
+                capture_screen=capture_fullscreen,
                 on_select=lambda region, img: process_region_selection(region, img),
                 on_copy=_on_copy,
                 on_save=_on_save,

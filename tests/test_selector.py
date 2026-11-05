@@ -46,6 +46,7 @@ def fake_root():
             def __init__(self, mode, size, color=None):
                 self.size = size
                 self.mode = mode
+                self.color = color
 
             def crop(self, box):
                 l, t, r, b = box
@@ -143,8 +144,74 @@ def test_selector_cancel_passes_none(fake_root):
     assert results["img"] is None
 
 
-def test_selector_freezes_captured_screen_until_selection(fake_root):
-    """选区启动时显示捕获的画面，开始框选后移除暗化遮罩。"""
+def test_selector_captures_screen_after_initial_selection(fake_root):
+    """首次框选完成时才捕获整屏，选框移动时显示截图对应位置。"""
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    capture_screen = MagicMock(return_value=full)
+    sel = Selector(
+        x=0, y=0, width=200, height=200, full_img=None,
+        capture_screen=capture_screen,
+        on_select=lambda region, img: None,
+        on_copy=lambda region, img: None,
+        on_save=lambda region, img: None,
+    )
+
+    class Event:
+        def __init__(self, x, y):
+            self.x, self.y = x, y
+
+    assert sel.full_img is None
+    assert "bg" not in sel._items
+    fake_root.attributes.assert_any_call("-alpha", 0.5)
+    capture_screen.assert_not_called()
+
+    sel._on_press(Event(20, 20))
+    sel._on_drag(Event(80, 80))
+    capture_screen.assert_not_called()
+    sel._on_release(Event(80, 80))
+
+    capture_screen.assert_called_once_with()
+    assert sel.full_img is full
+    assert "bg" in sel._items
+    assert "live_mask1" in sel._items
+    assert "region" not in sel._items
+    fake_root.attributes.assert_any_call("-alpha", 1.0)
+
+
+def test_selection_defaults_to_move_tool_and_can_be_dragged(fake_root):
+    from unittest.mock import patch
+
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    sel = Selector(
+        x=0, y=0, width=200, height=200, full_img=full,
+        on_select=lambda region, img: None,
+        on_copy=lambda region, img: None,
+        on_save=lambda region, img: None,
+    )
+    assert sel.tool == "move"
+    assert tk.Canvas.call_args.kwargs["cursor"] == "fleur"
+
+    class Event:
+        def __init__(self, x, y):
+            self.x, self.y = x, y
+
+    # Create a selection, then drag from its interior to move the whole frame.
+    sel._on_press(Event(20, 20))
+    with patch.object(sel, "_init_region_img", wraps=sel._init_region_img) as crop:
+        sel._on_drag(Event(80, 80))
+        crop.assert_not_called()
+        sel._on_release(Event(80, 80))
+        crop.assert_called_once()
+    assert sel.canvas.configure.call_args_list[-1].kwargs["cursor"] == "fleur"
+    sel._on_press(Event(40, 40))
+    assert sel._drag_op == ("move", "move")
+    sel._on_drag(Event(50, 55))
+    assert sel._region == (30, 35, 90, 95)
+
+
+def test_moving_selection_reveals_new_area_of_fixed_screenshot(fake_root):
+    from unittest.mock import patch
+
     full = Image.new("RGB", (200, 200), (255, 255, 255))
     sel = Selector(
         x=0, y=0, width=200, height=200, full_img=full,
@@ -153,21 +220,30 @@ def test_selector_freezes_captured_screen_until_selection(fake_root):
         on_save=lambda region, img: None,
     )
 
-    background = sel._items["bg"]
-    mask = sel._items["select_mask"]
-    sel.canvas.create_image.assert_any_call(
-        0, 0, image=sel._bg_photo, anchor="nw"
-    )
-    fake_root.attributes.assert_any_call("-alpha", 1.0)
-
     class Event:
-        x = 20
-        y = 20
+        def __init__(self, x, y):
+            self.x, self.y = x, y
 
-    sel._on_press(Event())
-    assert "select_mask" not in sel._items
-    sel.canvas.delete.assert_any_call(mask)
-    assert sel._items["bg"] == background
+    sel._on_press(Event(20, 20))
+    sel._on_drag(Event(80, 80))
+    sel._on_release(Event(80, 80))
+    old_crop = sel._region_img
+    mask_ids = tuple(sel._items[f"live_mask{i}"] for i in range(1, 5))
+
+    with patch.object(sel, "_init_region_img") as crop, \
+         patch.object(sel, "_render_masks") as masks:
+        sel._on_press(Event(40, 40))
+        sel._on_drag(Event(50, 55))
+
+    assert sel._region == (30, 35, 90, 95)
+    assert tuple(sel._items[f"live_mask{i}"] for i in range(1, 5)) == mask_ids
+    assert "region" not in sel._items
+    assert sel._region_img is old_crop
+    crop.assert_not_called()
+    masks.assert_not_called()
+
+    sel._on_release(Event(50, 55))
+    assert sel._region_img is not old_crop
 
 
 # =================================================================== #
@@ -549,8 +625,8 @@ def test_text_annotation(fake_root):
 # Task 4: 渲染测试
 # =================================================================== #
 
-def test_render_all_in_adjust_mode_creates_masks_and_region(fake_root):
-    """adjust 模式下 _render_all 应创建 4 块遮罩 + 选区图。"""
+def test_render_all_in_adjust_mode_reuses_selection_masks(fake_root):
+    """adjust 模式下 _render_all 应复用四块遮罩且不覆盖选区画面。"""
     full = Image.new("RGB", (200, 200), (255, 255, 255))
     sel = Selector(x=0, y=0, width=200, height=200, full_img=full,
                    on_select=lambda r, i: None,
@@ -560,11 +636,11 @@ def test_render_all_in_adjust_mode_creates_masks_and_region(fake_root):
     sel._region = (50, 50, 150, 150)
     sel._init_region_img()
     sel._render_all()
-    # _items 里应有 bg / mask1-4 / region / rect / handles
+    # _items 里应有 bg / 四块遮罩 / rect / handles
     assert "bg" in sel._items, "缺少背景"
-    for i in range(1, 5):
-        assert f"mask{i}" in sel._items, f"缺少遮罩 mask{i}"
-    assert "region" in sel._items, "缺少选区图"
+    assert all(f"live_mask{i}" in sel._items for i in range(1, 5))
+    assert not any(f"mask{i}" in sel._items for i in range(1, 5))
+    assert "region" not in sel._items
     assert "rect" in sel._items, "缺少选区边框"
     assert "handles" in sel._items, "缺少手柄"
 
@@ -764,6 +840,22 @@ def test_select_tool_sets_topmost_but_no_lift(fake_root):
         if c.args and c.args[0] == "-topmost"
     ]
     assert topmost_calls, "切换工具后未设置 -topmost"
+
+
+def test_toolbar_stays_above_overlay_and_inside_screen_while_moving(fake_root):
+    sel = Selector(x=-100, y=0, width=1000, height=800, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._actual_w, sel._actual_h = 1000, 800
+    sel._tb_visible = True
+    sel._tb_size = (180, 40)
+
+    sel._tb_show((300, 760, 500, 800), (200, 760, 200, 40))
+
+    assert sel.tb_win.geometry.call_args.args[0] == "+200+716"
+    assert sel._tb_pos == (200, 716, 180, 40)
+    sel.tb_win.wm_attributes.assert_called_with("-topmost", True)
 
 
 def test_selection_masks_cover_all_outside_areas(fake_root):

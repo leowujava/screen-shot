@@ -74,19 +74,20 @@ class Selector:
                 "sw": "crosshair", "w": "sb_left_arrow", "move": "fleur"}
 
     # 标注工具（取色已集成到颜色面板，不在主工具条）
-    TOOLS = ("brush", "rect", "ellipse", "arrow", "mosaic", "text")
-    TOOL_ICONS = {"brush": "✏", "rect": "⬜", "ellipse": "◯", "arrow": "↗",
+    TOOLS = ("move", "brush", "rect", "ellipse", "arrow", "mosaic", "text")
+    TOOL_ICONS = {"move": "✥", "brush": "✏", "rect": "⬜", "ellipse": "◯", "arrow": "↗",
                   "mosaic": "▒", "text": "T"}
-    TOOL_LABELS = {"brush": "画笔", "rect": "矩形", "ellipse": "圆形",
+    TOOL_LABELS = {"move": "移动选区", "brush": "画笔", "rect": "矩形", "ellipse": "圆形",
                    "arrow": "箭头", "mosaic": "打码", "text": "文字"}
 
     def __init__(self, x, y, width, height, full_img, on_select,
-                 on_copy, on_save, root=None):
+                 on_copy, on_save, root=None, capture_screen=None):
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.full_img = full_img
+        self.capture_screen = capture_screen
         self.on_select = on_select
         self.on_copy = on_copy
         self.on_save = on_save
@@ -104,16 +105,17 @@ class Selector:
         self._crosshair_label_bg = None
         self._crosshair_label_size = None
         self._bg_photo = None
+        self._select_mask_photo = None
         self._tb_visible = False
         self._tb_size = None
         self._tb_row_state = 0
-        self._tb_active_tool = "brush"
+        self._tb_active_tool = "move"
         self._color_row = None
         self._color_win = None
         self._color_btns = {}
 
         # 标注状态（默认颜色 = 色板第一色，与截图中箭头红色一致）
-        self.tool = "brush"
+        self.tool = "move"
         self.color = PALETTE[0]
         self.width_attr = 3
         self.undo = UndoStack(maxlen=10)
@@ -152,7 +154,7 @@ class Selector:
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
 
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
-                                cursor="crosshair")
+                                cursor="fleur")
         self.canvas.pack(fill="both", expand=True)
 
         if self.full_img is not None:
@@ -160,14 +162,13 @@ class Selector:
             self._items["bg"] = self.canvas.create_image(
                 0, 0, image=self._bg_photo, anchor="nw"
             )
-            self._items["select_mask"] = self.canvas.create_rectangle(
-                0, 0, self._actual_w, self._actual_h,
-                fill="black", stipple="gray50", width=0,
-            )
+            self._select_mask_photo = None
+            self._render_selection_masks(0, 0, 0, 0)
 
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Motion>", self._update_cursor)
         self.canvas.bind("<Button-3>", lambda e: self._cancel())
         self.canvas.bind("<Double-Button-1>", lambda e: self._confirm())
         self.root.bind("<Escape>", lambda e: self._cancel())
@@ -373,7 +374,6 @@ class Selector:
             if not self.tb_win.winfo_exists():
                 return
             self.tb_win.deiconify()
-            self.tb_win.wm_attributes("-topmost", True)
             self.tb_win.update_idletasks()
             self._tb_visible = True
             self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
@@ -385,18 +385,19 @@ class Selector:
             self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
             self._tb_row_state = row_state
         x, y = pos[0], pos[1]
-        w, h = size[2], size[3]
+        h = size[3]
         tb_w, tb_h = self._tb_size
         W, H = self._actual_w, self._actual_h
         ty = y + h + 4
         if ty + tb_h > H:
             ty = y - tb_h - 4
-        if ty < 0:
-            ty = y + h + 4
+        ty = max(0, min(ty, H - tb_h))
         tx = max(0, min(x, W - tb_w)) if tb_w else x
         screen_x = self.x + tx
         screen_y = self.y + ty
         self.tb_win.geometry(f"+{screen_x}+{screen_y}")
+        # Keep the separate toolbar above the fullscreen overlay while it moves.
+        self.tb_win.wm_attributes("-topmost", True)
         # 缓存工具条屏幕位置（供 _is_over_toolbar 使用，避免每帧 winfo）
         self._tb_pos = (screen_x, screen_y, tb_w, tb_h)
 
@@ -540,11 +541,14 @@ class Selector:
             self._bg_photo = bg_photo
             self._items["bg"] = self.canvas.create_image(0, 0, image=bg_photo, anchor="nw")
 
-        # 4 块暗化遮罩
-        self._render_masks(l, t, r, b)
+        if self.full_img is not None:
+            self._render_selection_masks(l, t, r, b)
+        else:
+            self._render_masks(l, t, r, b)
 
         # 选区图
-        self._render_region(l, t)
+        if self.undo:
+            self._render_region(l, t)
 
         # 选区边框
         if "rect" not in self._items:
@@ -557,9 +561,57 @@ class Selector:
         # 工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
 
+    def _freeze_selection(self):
+        if self.full_img is not None or self.capture_screen is None:
+            return
+        self._tb_hide()
+        self.root.withdraw()
+        self.root.update_idletasks()
+        self.root.update()
+        try:
+            full = self.capture_screen()
+        finally:
+            self.root.deiconify()
+            self.root.attributes("-alpha", 1.0)
+            self._force_fullscreen(self.x, self.y, self._actual_w, self._actual_h)
+            self.root.update_idletasks()
+        if full is None:
+            raise RuntimeError("Screen capture returned no image")
+        self.full_img = full
+        self._bg_photo = ImageTk.PhotoImage(full)
+        self._items["bg"] = self.canvas.create_image(
+            0, 0, image=self._bg_photo, anchor="nw"
+        )
+        self._select_mask_photo = None
+
+    def _render_selection_masks(self, l, t, r, b):
+        """Darken outside the selection without covering its live crop."""
+        W, H = self._actual_w, self._actual_h
+        zones = (
+            (0, 0, W, t),
+            (0, t, l, b),
+            (r, t, W, b),
+            (0, b, W, H),
+        )
+        for i, coords in enumerate(zones, 1):
+            key = f"live_mask{i}"
+            if key not in self._items:
+                self._items[key] = self.canvas.create_rectangle(
+                    *coords, fill="black", stipple="gray50", width=0
+                )
+            else:
+                self.canvas.coords(self._items[key], *coords)
+
     def _render_lightweight(self, l, t, r, b):
         """画框阶段：用 Tk stipple 矩形做暗化（无 PIL 开销）。"""
         W, H = self._actual_w, self._actual_h
+        if self.full_img is not None:
+            self._render_selection_masks(l, t, r, b)
+            if "rect" not in self._items:
+                self._items["rect"] = self.canvas.create_rectangle(
+                    0, 0, 0, 0, outline="white", width=2)
+            self.canvas.coords(self._items["rect"], l, t, r, b)
+            return
         # 4 块 stipple 暗化
         if "m1" not in self._items:
             self._items["m1"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
@@ -748,9 +800,6 @@ class Selector:
             return
         if self._mode == "select":
             # 按下立刻创建最小框并进入 adjust 模式
-            select_mask = self._items.pop("select_mask", None)
-            if select_mask is not None:
-                self.canvas.delete(select_mask)
             self.start = (event.x, event.y)
             self._mode = "adjust"
             self._dragging_box = True
@@ -772,8 +821,14 @@ class Selector:
             self._drag_region = self._region
             self.canvas.configure(cursor=self._CURSORS[hit])
             return
-        # 选区内 → 开始标注
         l, t, r, b = self._region
+        if self.tool == "move" and l <= event.x <= r and t <= event.y <= b:
+            self._drag_op = ("move", "move")
+            self._drag_start = (event.x, event.y)
+            self._drag_region = self._region
+            self.canvas.configure(cursor=self._CURSORS["move"])
+            return
+        # 选区内 → 开始标注
         if l <= event.x <= r and t <= event.y <= b:
             if self._region_img is None:
                 return
@@ -791,7 +846,7 @@ class Selector:
                 d = ImageDraw.Draw(self._region_img)
                 d.point(self.draw_start, fill=self.color)
                 self._render_region(l, t)
-            self.canvas.configure(cursor="crosshair")
+            self._update_cursor(event)
 
     def _on_drag(self, event):
         # select→adjust 过渡：更新框大小
@@ -816,7 +871,6 @@ class Selector:
             if self._region:
                 l, t, r, b = self._region
                 self._show_crosshair(event.x, event.y, r - l, b - t)
-                self._init_region_img()
             self._render_all()
             return
         # 手柄 resize
@@ -836,9 +890,21 @@ class Selector:
                     t = t + dy
                 if op in ("s", "sw", "se"):
                     b = b + dy
+            previous_region = self._region
             self._region = self._normalize((l, t, r, b))
             self._hide_crosshair()
-            self._adjust_region()
+            if (
+                kind == "move"
+                and self.full_img is not None
+                and self._region is not None
+                and (self._region[2] - self._region[0],
+                     self._region[3] - self._region[1])
+                == (previous_region[2] - previous_region[0],
+                    previous_region[3] - previous_region[1])
+            ):
+                self._render_moved_region()
+            else:
+                self._adjust_region()
             return
         # 标注
         if self.drawing and self._region_img is not None:
@@ -861,12 +927,15 @@ class Selector:
                     self._draw_preview(sx + l, sy + t, rx + l, ry + t)
 
     def _on_release(self, event):
+        completed_move = (
+            self._drag_op is not None and self._drag_op[1] == "move"
+        )
         self.start = None
         self._drag_op = None
         self._drag_start = None
         self._drag_region = None
 
-        self.canvas.configure(cursor="crosshair")
+        self._update_cursor(event)
         self._hide_crosshair()
         # 画框结束：清理轻量渲染，切换到完整渲染
         if getattr(self, "_dragging_box", False):
@@ -876,11 +945,18 @@ class Selector:
                 self._mode = "select"
                 self._render_all()
                 return
+            self._freeze_selection()
+            self._init_region_img()
             # 画框完成：完整渲染（背景 + PIL 遮罩 + 选区图 + 手柄）
             self._render_all()
             return
         if self._region is None:
             self._mode = "select"
+            self._render_all()
+            return
+        if completed_move and self.full_img is not None:
+            self.undo.clear()
+            self._init_region_img()
             self._render_all()
             return
         if not self.drawing or self._region_img is None:
@@ -921,6 +997,35 @@ class Selector:
         # 标注完成后确保工具条不被画布窗口遮挡（不 lift，避免抢焦点）
         if self.tb_win is not None and self.tb_win.winfo_exists():
             self.tb_win.wm_attributes("-topmost", True)
+
+    def _update_cursor(self, event):
+        if self._mode == "select" or self._region is None:
+            cursor = self._CURSORS["move"]
+        else:
+            hit = self._hit_test(event.x, event.y)
+            if hit:
+                cursor = self._CURSORS[hit]
+            else:
+                l, t, r, b = self._region
+                inside = l <= event.x <= r and t <= event.y <= b
+                cursor = (
+                    self._CURSORS["move"]
+                    if inside and self.tool == "move"
+                    else "crosshair"
+                )
+        self.canvas.configure(cursor=cursor)
+
+    def _render_moved_region(self):
+        """Move the crop aperture over the fixed screenshot without moving its pixels."""
+        l, t, r, b = self._region
+        if "region" in self._items:
+            self.canvas.delete(self._items.pop("region"))
+        self._region_photo = None
+        self._render_selection_masks(l, t, r, b)
+        if "rect" in self._items:
+            self.canvas.coords(self._items["rect"], l, t, r, b)
+        self._render_handles(l, t, r, b)
+        self._tb_show((l, t, r, b), (l, t, r - l, b - t))
 
     @staticmethod
     def _alt_pressed(event=None):

@@ -9,6 +9,7 @@ def _box(x, y):
 def test_empty_result():
     assert ocr_result_to_text(None) == ""
     assert ocr_result_to_text([]) == ""
+    assert ocr_result_to_text(([], [])) == ""
 
 
 def test_sorts_by_position_reading_order():
@@ -43,3 +44,17 @@ def test_rapidocr_v3_empty():
 def test_single_line():
     r = [[_box(0, 0), "hello", 0.8]]
     assert ocr_result_to_text(r) == "hello"
+
+
+def test_rapidocr_onnxruntime_new_tuple_format():
+    # rapidocr_onnxruntime 新版：( [ [box, text, conf], ... ], [times] )
+    r = (
+        [
+            [_box(120, 40), "D", 0.9],
+            [_box(10, 40), "A", 0.9],
+            [_box(10, 10), "B", 0.9],
+            [_box(120, 10), "C", 0.9],
+        ],
+        [0.1, 0.2, 0.3],
+    )
+    assert ocr_result_to_text(r) == "B\nC\nA\nD"

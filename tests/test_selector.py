@@ -143,6 +143,33 @@ def test_selector_cancel_passes_none(fake_root):
     assert results["img"] is None
 
 
+def test_selector_freezes_captured_screen_until_selection(fake_root):
+    """选区启动时显示捕获的画面，开始框选后移除暗化遮罩。"""
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    sel = Selector(
+        x=0, y=0, width=200, height=200, full_img=full,
+        on_select=lambda region, img: None,
+        on_copy=lambda region, img: None,
+        on_save=lambda region, img: None,
+    )
+
+    background = sel._items["bg"]
+    mask = sel._items["select_mask"]
+    sel.canvas.create_image.assert_any_call(
+        0, 0, image=sel._bg_photo, anchor="nw"
+    )
+    fake_root.attributes.assert_any_call("-alpha", 1.0)
+
+    class Event:
+        x = 20
+        y = 20
+
+    sel._on_press(Event())
+    assert "select_mask" not in sel._items
+    sel.canvas.delete.assert_any_call(mask)
+    assert sel._items["bg"] == background
+
+
 # =================================================================== #
 # 现有测试（适配新类名 + full_img 参数）
 # =================================================================== #

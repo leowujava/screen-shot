@@ -146,7 +146,7 @@ class Selector:
         self.root.configure(bg="black")
         self.root.wm_attributes("-topmost", True)
         self.root.wm_overrideredirect(True)
-        self.root.attributes("-alpha", 0.5)
+        self.root.attributes("-alpha", 1.0 if self.full_img is not None else 0.5)
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
         self.root.update_idletasks()
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
@@ -154,6 +154,16 @@ class Selector:
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
+
+        if self.full_img is not None:
+            self._bg_photo = ImageTk.PhotoImage(self.full_img)
+            self._items["bg"] = self.canvas.create_image(
+                0, 0, image=self._bg_photo, anchor="nw"
+            )
+            self._items["select_mask"] = self.canvas.create_rectangle(
+                0, 0, self._actual_w, self._actual_h,
+                fill="black", stipple="gray50", width=0,
+            )
 
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
@@ -738,6 +748,9 @@ class Selector:
             return
         if self._mode == "select":
             # 按下立刻创建最小框并进入 adjust 模式
+            select_mask = self._items.pop("select_mask", None)
+            if select_mask is not None:
+                self.canvas.delete(select_mask)
             self.start = (event.x, event.y)
             self._mode = "adjust"
             self._dragging_box = True

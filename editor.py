@@ -103,9 +103,14 @@ def ocr_result_to_text(result):
         return "\n".join(txts[i] for i in idx)
 
     # 格式二：rapidocr-onnxruntime 的 list [[box, text, conf], ...]
+    # 或 (list, times)：([box, text, conf], ...), (..., ...,)
     if isinstance(result, (list, tuple)):
         if len(result) == 0:
             return ""
+        if len(result) == 2 and isinstance(result[0], (list, tuple)) and isinstance(result[1], (list, tuple)):
+            result = result[0]
+            if len(result) == 0:
+                return ""
         idx = sorted(range(len(result)),
                      key=lambda i: (round(result[i][0][0][1] / 8), result[i][0][0][0]))
         return "\n".join(result[i][1] for i in idx)

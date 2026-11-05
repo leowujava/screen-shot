@@ -154,7 +154,7 @@ class Selector:
         self._force_fullscreen(x, y, self._actual_w, self._actual_h)
 
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0,
-                                cursor="fleur")
+                                cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
         if self.full_img is not None:
@@ -585,7 +585,7 @@ class Selector:
         self._select_mask_photo = None
 
     def _render_selection_masks(self, l, t, r, b):
-        """Darken outside the selection without covering its live crop."""
+        """Apply smooth alpha overlays outside the selection."""
         W, H = self._actual_w, self._actual_h
         zones = (
             (0, 0, W, t),
@@ -593,14 +593,35 @@ class Selector:
             (r, t, W, b),
             (0, b, W, H),
         )
-        for i, coords in enumerate(zones, 1):
+        while len(self._mask_photos) < 4:
+            self._mask_photos.append(None)
+        for i, (x0, y0, x1, y1) in enumerate(zones, 1):
             key = f"live_mask{i}"
-            if key not in self._items:
-                self._items[key] = self.canvas.create_rectangle(
-                    *coords, fill="black", stipple="gray50", width=0
-                )
+            width, height = x1 - x0, y1 - y0
+            if width <= 0 or height <= 0:
+                if key in self._items:
+                    self.canvas.delete(self._items.pop(key))
+                self._mask_photos[i - 1] = None
             else:
-                self.canvas.coords(self._items[key], *coords)
+                mask = Image.new(
+                    "RGBA", (width, height), (0, 0, 0, MASK_ALPHA)
+                )
+                photo = ImageTk.PhotoImage(mask)
+                self._mask_photos[i - 1] = photo
+                if key not in self._items:
+                    self._items[key] = self.canvas.create_image(
+                        x0, y0, image=photo, anchor="nw"
+                    )
+                else:
+                    self.canvas.coords(self._items[key], x0, y0)
+                    self.canvas.itemconfigure(self._items[key], image=photo)
+
+    def _set_selection_masks_visible(self, visible):
+        state = "normal" if visible else "hidden"
+        for i in range(1, 5):
+            mask = self._items.get(f"live_mask{i}")
+            if mask is not None:
+                self.canvas.itemconfigure(mask, state=state)
 
     def _render_lightweight(self, l, t, r, b):
         """画框阶段：用 Tk stipple 矩形做暗化（无 PIL 开销）。"""
@@ -826,6 +847,7 @@ class Selector:
             self._drag_op = ("move", "move")
             self._drag_start = (event.x, event.y)
             self._drag_region = self._region
+            self._set_selection_masks_visible(False)
             self.canvas.configure(cursor=self._CURSORS["move"])
             return
         # 选区内 → 开始标注
@@ -957,6 +979,7 @@ class Selector:
         if completed_move and self.full_img is not None:
             self.undo.clear()
             self._init_region_img()
+            self._set_selection_masks_visible(True)
             self._render_all()
             return
         if not self.drawing or self._region_img is None:
@@ -1000,7 +1023,7 @@ class Selector:
 
     def _update_cursor(self, event):
         if self._mode == "select" or self._region is None:
-            cursor = self._CURSORS["move"]
+            cursor = "crosshair"
         else:
             hit = self._hit_test(event.x, event.y)
             if hit:
@@ -1021,7 +1044,6 @@ class Selector:
         if "region" in self._items:
             self.canvas.delete(self._items.pop("region"))
         self._region_photo = None
-        self._render_selection_masks(l, t, r, b)
         if "rect" in self._items:
             self.canvas.coords(self._items["rect"], l, t, r, b)
         self._render_handles(l, t, r, b)

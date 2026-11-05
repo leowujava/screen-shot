@@ -56,7 +56,7 @@ def fake_root():
                 return FakeImage(self.mode, self.size)
 
             def getpixel(self, pos):
-                return (255, 255, 255)
+                return self.color if self.color is not None else (255, 255, 255)
 
         fake_pil_image.new = lambda mode, size, color=None: FakeImage(mode, size, color)
         fake_pil_image.open = MagicMock()
@@ -189,7 +189,7 @@ def test_selection_defaults_to_move_tool_and_can_be_dragged(fake_root):
         on_save=lambda region, img: None,
     )
     assert sel.tool == "move"
-    assert tk.Canvas.call_args.kwargs["cursor"] == "fleur"
+    assert tk.Canvas.call_args.kwargs["cursor"] == "crosshair"
 
     class Event:
         def __init__(self, x, y):
@@ -233,6 +233,7 @@ def test_moving_selection_reveals_new_area_of_fixed_screenshot(fake_root):
     with patch.object(sel, "_init_region_img") as crop, \
          patch.object(sel, "_render_masks") as masks:
         sel._on_press(Event(40, 40))
+        sel.canvas.itemconfigure.assert_any_call(mask_ids[0], state="hidden")
         sel._on_drag(Event(50, 55))
 
     assert sel._region == (30, 35, 90, 95)
@@ -244,6 +245,7 @@ def test_moving_selection_reveals_new_area_of_fixed_screenshot(fake_root):
 
     sel._on_release(Event(50, 55))
     assert sel._region_img is not old_crop
+    sel.canvas.itemconfigure.assert_any_call(mask_ids[0], state="normal")
 
 
 # =================================================================== #
@@ -643,6 +645,13 @@ def test_render_all_in_adjust_mode_reuses_selection_masks(fake_root):
     assert "region" not in sel._items
     assert "rect" in sel._items, "缺少选区边框"
     assert "handles" in sel._items, "缺少手柄"
+    from selector import ImageTk
+    mask_image = next(
+        call.args[0] for call in reversed(ImageTk.PhotoImage.call_args_list)
+        if call.args[0].mode == "RGBA"
+    )
+    assert mask_image.mode == "RGBA"
+    assert mask_image.getpixel((0, 0)) == (0, 0, 0, 128)
 
 
 def test_render_all_in_select_mode_no_masks(fake_root):

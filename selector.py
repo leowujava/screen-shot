@@ -1170,6 +1170,14 @@ class Selector:
         if prev is not None:
             self._region_img = prev
             self._render_all()
+            # 诊断日志：撤销后强制刷新画布，确认渲染生效。
+            # 若用户报告"撤销没反应"，检查日志里 _render_all 是否被调用、
+            # _region_img 是否为预期的图。
+            try:
+                self.root.update_idletasks()
+                self.root.update()
+            except tk.TclError:
+                pass
 
     def _select_tool(self, name):
         self.tool = name

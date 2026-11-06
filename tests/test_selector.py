@@ -177,6 +177,9 @@ def test_selector_captures_screen_after_initial_selection(fake_root):
     # 选区 crop 完成（_init_region_img）后，_region_img 非空，选区图应已渲染
     assert "region" in sel._items
     fake_root.attributes.assert_any_call("-alpha", 1.0)
+    # 画框完成（_freeze_selection 重映射 overlay）后，焦点应被强制拉回 overlay，
+    # 避免键盘输入落到之前的应用里（松开鼠标后直接可用 Ctrl+Z / Esc 等）
+    fake_root.focus_force.assert_called()
 
 
 def test_selection_defaults_to_move_tool_and_can_be_dragged(fake_root):
@@ -830,6 +833,51 @@ def test_handle_unlocked_after_undo(fake_root):
     # 撤销 → undo 栈清空 → 手柄解锁
     sel._undo()
     assert sel._hit_test(10, 10) == "nw"
+
+
+# =================================================================== #
+# Task 7b: 手柄 resize 拖到尺寸 < MIN_SIZE 时不应崩溃
+# =================================================================== #
+
+def test_adjust_region_handles_none_region(fake_root):
+    """拖动手柄使选区尺寸 < MIN_SIZE 时，_normalize 返回 None，
+    _region 被置空。_adjust_region 不应因解包 None 而崩溃。
+
+    回归：手柄 resize 拖动到极小尺寸时，_on_drag 调用 _adjust_region()
+    触发 `l, t, r, b = self._region` → TypeError: cannot unpack non-iterable NoneType。
+    """
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+
+    # 拖 nw 手柄向右下，使选区宽 = 10-90 = -80 → 尺寸 < MIN_SIZE → _region = None
+    sel._on_press(E(10, 10))
+    assert sel._drag_op is not None
+    sel._on_drag(E(90, 90))
+
+    assert sel._region is None
+    # _on_drag → _adjust_region 不应抛异常（修复后已加 None 防御）
+
+
+def test_adjust_region_direct_none_no_crash(fake_root):
+    """_region 为 None 时直接调用 _adjust_region 不应崩溃。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = None
+    # 不应抛 TypeError
+    sel._adjust_region()
 
 
 # =================================================================== #

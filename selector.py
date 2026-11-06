@@ -761,6 +761,10 @@ class Selector:
 
     def _adjust_region(self):
         """调整选区后重新 crop、清空标注和撤销栈。"""
+        if self._region is None:
+            # 手柄拖动到选区尺寸 < MIN_SIZE 时 _normalize 返回 None（_region 被置空）。
+            # 此时选区无效，无法 crop / 清空标注，直接返回避免解包 None 崩溃。
+            return
         l, t, r, b = self._region
         W, H = self._actual_w, self._actual_h
         l = max(0, min(l, W))
@@ -976,6 +980,14 @@ class Selector:
                 self._render_all()
                 return
             self._freeze_selection()
+            # _freeze_selection 里 withdraw → 截图 → deiconify 会让 overlay 窗口
+            # 重映射，键盘焦点可能随之丢失（落到之前的应用）。
+            # 强制把焦点拉回 overlay，保证松开鼠标后直接可用键盘
+            # （Ctrl+Z / Esc / Enter 等）操作选区。
+            try:
+                self.root.focus_force()
+            except tk.TclError:
+                pass
             self._init_region_img()
             # 画框完成：完整渲染（背景 + PIL 遮罩 + 选区图 + 手柄）
             self._render_all()

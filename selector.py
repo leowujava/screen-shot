@@ -373,10 +373,15 @@ class Selector:
         if not self._tb_visible:
             if not self.tb_win.winfo_exists():
                 return
+            # 首次显示：先在屏幕外摆好尺寸和内容（deiconify + 布局 + 定位到屏幕外），
+            # 等内容绘制完成后再映射到最终位置。若先 deiconify 再定位，
+            # 窗口会先在默认位置（屏幕左上）以空内容闪现一帧（白底闪烁）。
+            self.tb_win.geometry("+0-10000")
             self.tb_win.deiconify()
             self.tb_win.update_idletasks()
-            self._tb_visible = True
             self._tb_size = (self.tb_win.winfo_width(), self.tb_win.winfo_height())
+            self._tb_row_state = 1 if self._color_row is not None else 0
+            self._tb_visible = True
         # 颜色行弹出/收起会改变窗口尺寸：只在行状态变化时重新测量，
         # 避免每帧拖动都触发同步布局计算（拖动性能回归测试的根因）
         row_state = 1 if self._color_row is not None else 0
@@ -395,6 +400,8 @@ class Selector:
         tx = max(0, min(x, W - tb_w)) if tb_w else x
         screen_x = self.x + tx
         screen_y = self.y + ty
+        # 定位在映射前已完成（首次显示时窗口还在屏幕外），这里只设最终位置，
+        # 与后续 topmost 在同一次主循环事件内完成，不会闪现中间状态
         self.tb_win.geometry(f"+{screen_x}+{screen_y}")
         # Keep the separate toolbar above the fullscreen overlay while it moves.
         self.tb_win.wm_attributes("-topmost", True)

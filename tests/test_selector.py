@@ -896,6 +896,38 @@ def test_toolbar_stays_above_overlay_and_inside_screen_while_moving(fake_root):
     sel.tb_win.wm_attributes.assert_called_with("-topmost", True)
 
 
+def test_toolbar_first_show_no_white_flash(fake_root):
+    """首次显示工具栏时，必须在屏幕外先完成尺寸确定和定位，
+    避免窗口以空内容（白底）闪现到默认位置（屏幕左上）。
+
+    回归：旧实现先 deiconify（窗口立刻在屏幕左上可见但为空），
+    主循环下一帧才 geometry 到选区下方 → 白底闪烁。
+    """
+    sel = Selector(x=0, y=0, width=1000, height=800, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._actual_w, sel._actual_h = 1000, 800
+
+    sel._tb_show((300, 760, 500, 800), (200, 760, 200, 40))
+
+    geo_calls = [c.args[0] for c in sel.tb_win.geometry.call_args_list]
+    # 第一次定位必须是屏幕外（负 y），保证窗口在映射前不在屏幕上
+    assert geo_calls[0].startswith("+0-"), \
+        f"首次 geometry 应在屏幕外（负 y），实际: {geo_calls[0]}"
+    # 调用顺序：屏幕外定位 → 映射 → 最终定位
+    call_names = [c[0] for c in sel.tb_win.mock_calls]
+    assert "deiconify" in call_names
+    i_offscreen = call_names.index("geometry")
+    i_deiconify = call_names.index("deiconify")
+    i_final = call_names.index("geometry", i_deiconify)
+    assert i_offscreen < i_deiconify < i_final, \
+        f"期望 [屏幕外 geometry] < [deiconify] < [最终 geometry]，实际: {call_names}"
+    # 最终位置 = 选区 left x=300、bottom y=800 上方，
+    # 工具条尺寸取自 fixture mock（winfo 100x30）→ (300, 800-30-4, 100, 30)
+    assert sel._tb_pos == (300, 726, 100, 30)
+
+
 def test_selection_masks_cover_all_outside_areas(fake_root):
     """选区外四周都应保持暗化，只有框内区域高亮。"""
     sel = Selector(x=0, y=0, width=100, height=100, full_img=None,

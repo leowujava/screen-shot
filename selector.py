@@ -546,8 +546,9 @@ class Selector:
         else:
             self._render_masks(l, t, r, b)
 
-        # 选区图
-        if self.undo:
+        # 选区图（以 _region_img 为准：撤销后 undo 栈变空，但选区图仍需重绘，
+        # 否则画布上还是旧的 PhotoImage，表现为"撤销没反应"）
+        if self._region_img is not None:
             self._render_region(l, t)
 
         # 选区边框

@@ -174,7 +174,8 @@ def test_selector_captures_screen_after_initial_selection(fake_root):
     assert sel.full_img is full
     assert "bg" in sel._items
     assert "live_mask1" in sel._items
-    assert "region" not in sel._items
+    # 选区 crop 完成（_init_region_img）后，_region_img 非空，选区图应已渲染
+    assert "region" in sel._items
     fake_root.attributes.assert_any_call("-alpha", 1.0)
 
 
@@ -581,6 +582,33 @@ def test_undo_reverts_annotation(fake_root):
     assert sel._region_img.getpixel((40, 40)) == (255, 255, 255)
 
 
+def test_undo_renders_last_image(fake_root):
+    """撤销后画布必须重绘选区图（_render_region 被调用）。
+
+    回归：_render_all 曾用 if self.undo: 门控选区图渲染，
+    撤销使栈变空后最后一张图像（干净选区）不会重绘到画布，表现为"撤销没反应"。
+    """
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "rect"; sel.color = "#ff0000"; sel.width_attr = 2
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+    sel._on_press(E(20, 20))
+    sel._on_release(E(80, 80))
+    mock_render = MagicMock()
+    sel._render_region = mock_render
+    sel._undo()
+    assert mock_render.called
+    mock_render.assert_called_once_with(10, 10)
+
+
 def test_mosaic_annotation(fake_root):
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     d = ImageDraw.Draw(full)
@@ -638,11 +666,12 @@ def test_render_all_in_adjust_mode_reuses_selection_masks(fake_root):
     sel._region = (50, 50, 150, 150)
     sel._init_region_img()
     sel._render_all()
-    # _items 里应有 bg / 四块遮罩 / rect / handles
+    # _items 里应有 bg / 四块遮罩 / rect / handles；
+    # _init_region_img 后 _region_img 非空，选区图应已渲染
     assert "bg" in sel._items, "缺少背景"
     assert all(f"live_mask{i}" in sel._items for i in range(1, 5))
     assert not any(f"mask{i}" in sel._items for i in range(1, 5))
-    assert "region" not in sel._items
+    assert "region" in sel._items
     assert "rect" in sel._items, "缺少选区边框"
     assert "handles" in sel._items, "缺少手柄"
     from selector import ImageTk

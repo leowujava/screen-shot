@@ -160,6 +160,19 @@ def test_draw_brush_single_point_matches_reference():
     assert list(result.getdata()) == list(expected.getdata())
 
 
+def test_alt_pressed_state_fallback(monkeypatch):
+    import drawing, sys
+
+    class Ev:
+        def __init__(self, state):
+            self.state = state
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert drawing.alt_pressed(Ev(0x20000)) is True
+    assert drawing.alt_pressed(Ev(0)) is False
+    assert drawing.alt_pressed(None) is False
+
+
 def test_draw_brush_perf_large_image():
     """2000x1200 图上 30 段画笔应在 1 秒内完成（优化前每帧整图 4x ≈ 数十秒）。"""
     big = Image.new("RGB", (2000, 1200), (255, 255, 255))

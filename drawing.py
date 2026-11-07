@@ -3,6 +3,7 @@
 供 editor.py 和 selector.py 使用。
 """
 import math
+import sys
 from PIL import Image, ImageDraw, ImageFilter
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,23 @@ class UndoStack:
 
     def __len__(self):
         return len(self._stack)
+
+
+def alt_pressed(event=None):
+    """事件发生时是否真正按住 Alt（用于约束正圆/正方形）。
+
+    Windows 下用 GetAsyncKeyState 查询（Tk 事件 state 在 Alt 释放后可能
+    仍带标志位，不可靠）；其余平台回退到 event.state。event 为 None 时 False。
+    """
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            VK_MENU = 0x12  # Alt
+            return bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
+        except Exception:
+            pass
+    state = getattr(event, "state", 0) or 0
+    return bool(state & 0x20000)
 
 
 def mosaic(img, left, top, right, bottom, block=24):

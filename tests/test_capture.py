@@ -1,7 +1,7 @@
 from PIL import Image
 from capture import (
     capture_fullscreen, capture_region, capture_virtual_screen_size,
-    _build_dib,
+    _build_dib, copy_text_to_clipboard,
 )
 
 
@@ -52,3 +52,19 @@ def test_build_dib_non_rgb_input():
     assert len(dib) == 40 + 2 * 2 * 4
     w, h = struct.unpack("<ii", dib[4:12])
     assert (w, h) == (2, 2)
+
+
+def test_copy_text_to_clipboard_sets_unicode_text():
+    from unittest.mock import patch
+    with patch("win32clipboard.OpenClipboard"), \
+         patch("win32clipboard.EmptyClipboard"), \
+         patch("win32clipboard.SetClipboardData") as scd, \
+         patch("win32clipboard.CloseClipboard"):
+        assert copy_text_to_clipboard("你好 hello") is True
+    scd.assert_called_once_with(13, "你好 hello")  # CF_UNICODETEXT
+
+
+def test_copy_text_to_clipboard_returns_false_on_error():
+    from unittest.mock import patch
+    with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")):
+        assert copy_text_to_clipboard("x") is False

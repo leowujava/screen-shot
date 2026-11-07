@@ -268,6 +268,21 @@ def test_virtual_coord_conversion(fake_root):
     assert sel._to_virtual(2000, 100) == (80, 100)
 
 
+def test_to_virtual_region(fake_root):
+    sel = Selector(x=-1920, y=0, width=3840, height=1080, full_img=None,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    assert sel._to_virtual_region() is None
+    sel._region = (100, 50, 300, 150)
+    # scale 1.0：canvas 坐标直接 + x 偏移
+    assert sel._to_virtual_region() == (-1820, 50, 200, 100)
+    # scale 2.0：先乘 scale 再加偏移
+    sel._scale_x = 2.0
+    sel._scale_y = 2.0
+    assert sel._to_virtual_region() == (-1720, 100, 400, 200)
+
+
 def test_calc_region_normalized(fake_root):
     sel = Selector(x=-1920, y=0, width=3840, height=1080, full_img=None,
                    on_select=lambda r, i: None,

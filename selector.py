@@ -37,7 +37,7 @@ MASK_ALPHA = 128
 
 from drawing import (
     draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text, mosaic,
-    UndoStack, get_ocr_engine, ocr_result_to_text,
+    UndoStack, get_ocr_engine, ocr_result_to_text, alt_pressed,
 )
 from PIL import Image, ImageDraw, ImageTk
 
@@ -795,6 +795,17 @@ class Selector:
             return None
         return (left, top, w, h)
 
+    def _to_virtual_region(self):
+        """当前选区 → mss 虚拟桌面坐标 (left, top, width, height)；无选区返回 None。"""
+        if self._region is None:
+            return None
+        l, t, r, b = self._region
+        vx_l = int(l * self._scale_x)
+        vx_t = int(t * self._scale_y)
+        vx_r = int(r * self._scale_x)
+        vx_b = int(b * self._scale_y)
+        return (vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t)
+
     def _normalize(self, region):
         l, t, r, b = region
         l, r = min(l, r), max(l, r)
@@ -953,7 +964,7 @@ class Selector:
             else:
                 sx, sy = self.draw_start
                 # 椭圆：按住 Alt 约束正圆预览
-                if self.tool == "ellipse" and self._alt_pressed(event):
+                if self.tool == "ellipse" and alt_pressed(event):
                     ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
                     self._draw_preview(l + min(ex0, ex1), t + min(ey0, ey1),
                                        l + max(ex0, ex1), t + max(ey0, ey1))
@@ -1022,7 +1033,7 @@ class Selector:
                 return
             # 按住 Alt 约束为正圆
             ex0, ey0, ex1, ey1 = sx, sy, rx, ry
-            if self._alt_pressed(event):
+            if alt_pressed(event):
                 ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
             draw_ellipse(self._region_img,
                          [min(ex0, ex1), min(ey0, ey1), max(ex0, ex1), max(ey0, ey1)],
@@ -1068,19 +1079,6 @@ class Selector:
             self.canvas.coords(self._items["rect"], l, t, r, b)
         self._render_handles(l, t, r, b)
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
-
-    @staticmethod
-    def _alt_pressed(event=None):
-        """事件发生时是否真正按住 Alt（用于约束正圆/正方形）。"""
-        if sys.platform.startswith("win"):
-            try:
-                import ctypes
-                VK_MENU = 0x12  # Alt
-                return bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
-            except Exception:
-                pass
-        state = getattr(event, "state", 0) or 0
-        return bool(state & 0x20000)
 
     def _constrain_ellipse(self, x0, y0, x1, y1):
         """按住 Alt 时约束椭圆为正圆：取横纵位移较大值作为边长。"""
@@ -1157,7 +1155,6 @@ class Selector:
         tk.Button(top, text="确定", command=commit).pack(pady=4)
         entry.bind("<Escape>", lambda e: top.destroy())
         top.bind("<Escape>", lambda e: top.destroy())
-        top.grab_set()
         top.wait_window(top)
         return result["text"]
 
@@ -1248,6 +1245,10 @@ class Selector:
 
     def _show_ocr_result(self, text):
         """弹窗显示识别结果，支持复制全部 / 复制选中 / Ctrl+C。"""
+        # 函数内 import：tests/test_selector.py 的 fake_root 会把 sys.modules["capture"]
+        # 替换成只有 capture_fullscreen 的桩，模块顶层 import 会炸掉整个测试文件
+        from capture import copy_text_to_clipboard
+
         if not text:
             from tkinter import messagebox
             messagebox.showinfo("识别文字", "未识别到文字。")
@@ -1264,30 +1265,17 @@ class Selector:
         # 只读但可选中（normal 状态 + 绑定 Ctrl+C）
         txt.config(state="normal")
 
-        def _copy_to_clipboard(s):
-            try:
-                import win32clipboard
-                win32clipboard.OpenClipboard()
-                try:
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardData(13, s)
-                finally:
-                    win32clipboard.CloseClipboard()
-                return True
-            except Exception:
-                return False
-
         def copy_all():
-            if _copy_to_clipboard(text):
+            if copy_text_to_clipboard(text):
                 dlg.destroy()
 
         def copy_selected():
             try:
                 sel = txt.get("sel.first", "sel.last")
                 if sel:
-                    if _copy_to_clipboard(sel):
+                    if copy_text_to_clipboard(sel):
                         dlg.destroy()
-            except (tk.TclError, Exception):
+            except Exception:
                 pass
 
         def ctrl_c(event):
@@ -1312,41 +1300,26 @@ class Selector:
     # ------------------------------------------------------------------ #
 
     def _confirm(self):
-        if self._region is None:
+        region = self._to_virtual_region()
+        if region is None:
             self._cancel()
             return
-        l, t, r, b = self._region
-        vx_l = int(l * self._scale_x)
-        vx_t = int(t * self._scale_y)
-        vx_r = int(r * self._scale_x)
-        vx_b = int(b * self._scale_y)
-        region = (vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t)
         self.result = region
         self._finish(lambda: self.on_select(region, self._region_img))
 
     def _copy(self):
-        if self._region is None:
+        region = self._to_virtual_region()
+        if region is None:
             self._cancel()
             return
-        l, t, r, b = self._region
-        vx_l = int(l * self._scale_x)
-        vx_t = int(t * self._scale_y)
-        vx_r = int(r * self._scale_x)
-        vx_b = int(b * self._scale_y)
-        region = (vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t)
         self.result = region
         self._finish(lambda: self.on_copy(region, self._region_img))
 
     def _save(self):
-        if self._region is None:
+        region = self._to_virtual_region()
+        if region is None:
             self._cancel()
             return
-        l, t, r, b = self._region
-        vx_l = int(l * self._scale_x)
-        vx_t = int(t * self._scale_y)
-        vx_r = int(r * self._scale_x)
-        vx_b = int(b * self._scale_y)
-        region = (vx_l + self.x, vx_t + self.y, vx_r - vx_l, vx_b - vx_t)
         self.result = region
         self._finish(lambda: self.on_save(region, self._region_img))
 

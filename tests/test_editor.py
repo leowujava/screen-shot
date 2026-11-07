@@ -36,3 +36,9 @@ def test_mosaic_reduces_detail():
     assert px != (0, 0, 255)
     # 区域外像素不受影响
     assert result.getpixel((48, 20)) == (255, 0, 0)
+
+
+def test_ocr_reexported_from_drawing():
+    """editor 的 OCR 逻辑必须来自 drawing 的唯一实现（去重）。"""
+    import editor, drawing
+    assert editor.ocr_result_to_text is drawing.ocr_result_to_text

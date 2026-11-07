@@ -4,19 +4,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser
 from PIL import Image, ImageDraw, ImageTk
 
-from capture import copy_to_clipboard
+from capture import copy_to_clipboard, copy_text_to_clipboard
 from drawing import (
-    mosaic, UndoStack,
+    mosaic, UndoStack, alt_pressed,
     draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text,
+    get_ocr_engine, ocr_result_to_text,  # OCR 逻辑统一由 drawing 提供，此处 re-export
 )
 
 import json
 import os
-
-# OCR 引擎（懒加载，未安装时 OCR 功能会提示而不影响其余功能）
-# 使用 rapidocr（PP-OCRv6，中英混合识别），而非仅支持中文的 rapidocr-onnxruntime
-_OCR_ENGINE = None
-_OCR_ENGINE_READY = False
 
 # 编辑器设置文件（位于用户目录）
 _SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".screen_shot_settings.json")
@@ -56,66 +52,6 @@ def _is_hex_color(value):
         return True
     except ValueError:
         return False
-
-
-def _get_ocr_engine():
-    """懒加载 OCR 引擎（首次调用时初始化）。失败返回 None。
-
-    优先使用 rapidocr（PP-OCRv6，中英混合）；回退 rapidocr-onnxruntime（仅中文）。
-    """
-    global _OCR_ENGINE, _OCR_ENGINE_READY
-    if _OCR_ENGINE_READY:
-        return _OCR_ENGINE
-    try:
-        from rapidocr import RapidOCR
-        _OCR_ENGINE = RapidOCR()
-        _OCR_ENGINE_READY = True
-        return _OCR_ENGINE
-    except Exception:
-        try:
-            from rapidocr_onnxruntime import RapidOCR
-            _OCR_ENGINE = RapidOCR()
-            _OCR_ENGINE_READY = True
-            return _OCR_ENGINE
-        except Exception:
-            return None
-
-
-def ocr_result_to_text(result):
-    """把 OCR 结果拼成按阅读顺序的文本（先上后下、先左后右，换行连接）。
-
-    兼容两种返回格式：
-    - rapidocr (v3) 的 RapidOCROutput：.boxes (n×4×2 ndarray) 与 .txts 一一对应
-    - rapidocr-onnxruntime 的 list：[[box, text, conf], ...]
-    result 为 None / 空时返回空字符串。
-    """
-    if result is None:
-        return ""
-
-    # 格式一：rapidocr v3 的 RapidOCROutput（有 .boxes / .txts 属性）
-    boxes = getattr(result, "boxes", None)
-    txts = getattr(result, "txts", None)
-    if boxes is not None and txts is not None:
-        if len(txts) == 0:
-            return ""
-        idx = sorted(range(len(txts)),
-                     key=lambda i: (round(boxes[i][0][1] / 8), boxes[i][0][0]))
-        return "\n".join(txts[i] for i in idx)
-
-    # 格式二：rapidocr-onnxruntime 的 list [[box, text, conf], ...]
-    # 或 (list, times)：([box, text, conf], ...), (..., ...,)
-    if isinstance(result, (list, tuple)):
-        if len(result) == 0:
-            return ""
-        if len(result) == 2 and isinstance(result[0], (list, tuple)) and isinstance(result[1], (list, tuple)):
-            result = result[0]
-            if len(result) == 0:
-                return ""
-        idx = sorted(range(len(result)),
-                     key=lambda i: (round(result[i][0][0][1] / 8), result[i][0][0][0]))
-        return "\n".join(result[i][1] for i in idx)
-
-    return ""
 
 
 class Editor:
@@ -638,24 +574,6 @@ class Editor:
         else:
             self._preview_id = None
 
-    @staticmethod
-    def _alt_pressed(event=None):
-        """事件发生时是否真正按住 Alt。
-
-        Windows 下直接用 GetAsyncKeyState 读 VK_MENU，最可靠；不依赖
-        event.state 的位（Tk 在不同平台/场景下位的含义不一致，容易误判成
-        按住 Alt，导致不按 Alt 时也被约束成正圆）。
-        """
-        if sys.platform.startswith("win"):
-            try:
-                import ctypes
-                VK_MENU = 0x12  # Alt
-                return bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
-            except Exception:
-                pass
-        state = getattr(event, "state", 0) or 0
-        return bool(state & 0x20000)
-
     def _ellipse_pos(self, pos, square=False):
         """圆形工具的目标点；square 为 True（按住 Alt）时约束成正圆。
 
@@ -682,7 +600,7 @@ class Editor:
             return
         pos = self._to_img(event.x, event.y)
         if self.tool == "ellipse":
-            pos = self._ellipse_pos(pos, self._alt_pressed(event))
+            pos = self._ellipse_pos(pos, alt_pressed(event))
         if self.tool == "brush":
             draw_brush(self.image, [self._brush_last, pos], self.color, self.width)
             self._brush_last = pos
@@ -728,7 +646,7 @@ class Editor:
         elif self.tool == "ellipse":
             self._canvas_delete_preview()
             # 按住 Alt 时约束为正圆（与拖拽预览保持一致）
-            x1, y1 = self._ellipse_pos(pos, self._alt_pressed(event))
+            x1, y1 = self._ellipse_pos(pos, alt_pressed(event))
             x0, y0 = self.draw_start
             # 规范化坐标后画椭圆（PIL 要求 x1>=x0, y1>=y0），
             # 跳过无面积的选区（单击或水平/垂直拖拽）
@@ -843,7 +761,7 @@ class Editor:
         import numpy as np
         import threading
 
-        engine = _get_ocr_engine()
+        engine = get_ocr_engine()
         if engine is None:
             messagebox.showerror(
                 "识别失败",
@@ -881,17 +799,8 @@ class Editor:
         txt.config(state="disabled")
 
         def copy_all():
-            try:
-                import win32clipboard
-                win32clipboard.OpenClipboard()
-                try:
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardData(13, text)  # CF_UNICODETEXT
-                finally:
-                    win32clipboard.CloseClipboard()
-            except Exception:
-                pass
-            dlg.destroy()
+            if copy_text_to_clipboard(text):
+                dlg.destroy()
 
         bar = tk.Frame(dlg)
         bar.pack(fill="x", padx=8, pady=(0, 8))

@@ -45,7 +45,7 @@ def _build_dib(img):
     """把 PIL Image 编码为 32 位 BGRA、bottom-up 的 DIB 字节串（BITMAPINFOHEADER + 像素）。
 
     biHeight 为正表示 bottom-up（首行是图像最底部）。Pillow 的 tobytes 默认给出
-    top-down 行序，所以这里逐行翻转成 bottom-up。
+    top-down 行序，所以这里用 transpose 翻转成 bottom-up。
     """
     import struct
 
@@ -53,14 +53,8 @@ def _build_dib(img):
         img = img.convert("RGB")
     w, h = img.size
 
-    # 32 位 BGRX（BGRA）top-down 像素
-    pixels = img.tobytes("raw", "BGRX")
-
-    # 把 top-down 行序翻转成 bottom-up（每行 w*4 字节）
-    row = w * 4
-    rows = [pixels[i * row:(i + 1) * row] for i in range(h)]
-    rows.reverse()
-    pixels_bu = b"".join(rows)
+    # C 级整块翻转（bottom-up），替代原 Python 逐行切片循环
+    pixels_bu = img.transpose(Image.FLIP_TOP_BOTTOM).tobytes("raw", "BGRX")
 
     # BITMAPINFOHEADER（40 字节）
     header = struct.pack(

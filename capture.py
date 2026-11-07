@@ -27,16 +27,34 @@ def capture_region(left, top, width, height):
         return Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
 
+def get_desktop_path():
+    """解析真实桌面路径（中文系统返回 桌面 目录）；失败回退 ~\\Desktop。"""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(260)
+    try:
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0, None, 0x20, buf) == 0:
+            return buf.value
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Desktop")
+
+
 def default_save_path():
     """默认保存路径：桌面/截图_时间戳.png"""
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+    desktop = get_desktop_path()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join(desktop, f"截图_{ts}.png")
 
 
 def save_image(img, path=None):
-    """保存图片，返回实际保存路径。失败抛异常。"""
+    """保存图片，返回实际保存路径。目标已存在时追加 _1、_2... 后缀防覆盖。失败抛异常。"""
     path = path or default_save_path()
+    if os.path.exists(path):
+        base, ext = os.path.splitext(path)
+        n = 1
+        while os.path.exists(f"{base}_{n}{ext}"):
+            n += 1
+        path = f"{base}_{n}{ext}"
     img.save(path)
     return path
 

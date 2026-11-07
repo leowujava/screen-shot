@@ -765,7 +765,7 @@ class Editor:
         if engine is None:
             messagebox.showerror(
                 "识别失败",
-                "未安装 OCR 引擎（rapidocr-onnxruntime）。\n请执行：pip install rapidocr-onnxruntime")
+                "未安装 OCR 引擎。\n请执行：pip install rapidocr\n（或：pip install rapidocr-onnxruntime）")
             return
 
         def run():

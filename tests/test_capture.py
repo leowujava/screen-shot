@@ -1,7 +1,9 @@
+import os
 from PIL import Image
 from capture import (
     capture_fullscreen, capture_region, capture_virtual_screen_size,
-    _build_dib, copy_text_to_clipboard,
+    _build_dib, copy_text_to_clipboard, get_desktop_path, default_save_path,
+    save_image,
 )
 
 
@@ -68,3 +70,39 @@ def test_copy_text_to_clipboard_returns_false_on_error():
     from unittest.mock import patch
     with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")):
         assert copy_text_to_clipboard("x") is False
+
+
+def test_get_desktop_path_from_shell32(monkeypatch):
+    import ctypes
+    def fake_shget(hwnd, csidl, token, flags, buf):
+        buf.value = "C:\\Users\\w\\桌面"
+        return 0
+    monkeypatch.setattr(ctypes.windll.shell32, "SHGetFolderPathW", fake_shget)
+    assert get_desktop_path() == "C:\\Users\\w\\桌面"
+
+
+def test_get_desktop_path_fallback(monkeypatch):
+    import ctypes
+    monkeypatch.setattr(ctypes.windll.shell32, "SHGetFolderPathW", lambda *a: 1)  # E_FAIL
+    assert get_desktop_path() == os.path.join(os.path.expanduser("~"), "Desktop")
+
+
+def test_default_save_path_uses_desktop(monkeypatch):
+    import capture
+    monkeypatch.setattr(capture, "get_desktop_path", lambda: "D:\\桌面")
+    p = default_save_path()
+    assert p.startswith("D:\\桌面\\截图_")
+
+
+def test_save_image_avoids_overwrite(tmp_path):
+    img = Image.new("RGB", (2, 2), (255, 0, 0))
+    path = tmp_path / "截图_20260101_120000.png"
+    path.write_bytes(b"ORIGINAL")
+    p1 = save_image(img, str(path))
+    assert p1 == str(tmp_path / "截图_20260101_120000_1.png")
+    assert path.read_bytes() == b"ORIGINAL"  # 原文件未被覆盖
+    p2 = save_image(img, str(path))
+    assert p2 == str(tmp_path / "截图_20260101_120000_2.png")
+    # 无冲突时直接保存原路径
+    p3 = save_image(img, str(tmp_path / "free.png"))
+    assert p3 == str(tmp_path / "free.png")

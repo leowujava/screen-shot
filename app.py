@@ -124,10 +124,7 @@ def do_copy_capture():
     """全屏截图只复制到剪贴板，不保存。耗时操作在工作线程执行。"""
     def worker():
         full = capture_fullscreen()
-        try:
-            copy_to_clipboard(full)
-        except Exception:
-            pass
+        _safe_copy_to_clipboard(full)
     threading.Thread(target=worker, daemon=True).start()
 
 

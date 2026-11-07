@@ -1,3 +1,6 @@
+import os
+import sys
+
 import pytest
 from PIL import Image, ImageDraw
 from drawing import (
@@ -184,3 +187,40 @@ def test_draw_brush_perf_large_image():
         last = p
     elapsed = time.perf_counter() - t0
     assert elapsed < 1.0, f"30 段画笔耗时 {elapsed:.2f}s（阈值 1.0s）"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+def test_load_font_prefers_cjk_font():
+    from PIL import ImageFont
+    import drawing
+    font = drawing._load_font(16)
+    assert isinstance(font, ImageFont.FreeTypeFont)
+    assert os.path.basename(font.path) in ("msyh.ttc", "msyh.ttf", "simhei.ttf", "arial.ttf")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+def test_draw_text_renders_cjk():
+    """中文标注必须渲染为真实字形（足够多的非背景像素），而非豆腐字。"""
+    img = Image.new("RGB", (160, 50), (255, 255, 255))
+    draw_text(img, (8, 12), "中文标注", "#000000", font_size=20)
+    dark = sum(1 for x in range(8, 130) for y in range(8, 45)
+               if img.getpixel((x, y)) != (255, 255, 255))
+    assert dark > 50
+
+
+def test_load_font_fallback_when_truetype_fails(monkeypatch):
+    from PIL import ImageFont
+    import drawing
+
+    real_truetype = ImageFont.truetype
+
+    # 仅让候选文件（字符串路径）的加载失败；Pillow 的 load_default 内部用
+    # BytesIO 调 truetype，必须放行，否则回退本身也会被炸掉。
+    def fake_truetype(font, size, *a, **k):
+        if isinstance(font, str):
+            raise OSError("no font")
+        return real_truetype(font, size, *a, **k)
+
+    monkeypatch.setattr(ImageFont, "truetype", fake_truetype)
+    font = drawing._load_font(17)  # 用未缓存的 size，避免命中前面测试的缓存
+    assert font is not None  # 回退 load_default，不抛异常

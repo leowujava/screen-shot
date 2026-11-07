@@ -4,7 +4,7 @@
 """
 import math
 import sys
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ---------------------------------------------------------------------------
 # OCR（识别文字）
@@ -72,6 +72,40 @@ def ocr_result_to_text(result):
         return "\n".join(result[i][1] for i in idx)
 
     return ""
+
+
+# ---------------------------------------------------------------------------
+# 字体（中文字体链）
+# ---------------------------------------------------------------------------
+
+# 按顺序尝试加载的字体文件名（中文系统优先微软雅黑，其次黑体，回退 Arial）
+_FONT_CANDIDATES = ("msyh.ttc", "msyh.ttf", "simhei.ttf", "arial.ttf")
+_font_cache = {}
+
+
+def _load_font(size):
+    """按中文字体链加载 TrueType 字体，缓存 (文件名, size)。
+
+    逐个尝试 _FONT_CANDIDATES，命中即用；全部失败（或系统无这些字体）时
+    回退 ImageFont.load_default()，保证不抛异常。
+    """
+    for name in _FONT_CANDIDATES:
+        cached_key = (name, size)
+        font = _font_cache.get(cached_key)
+        if font is not None:
+            return font
+        try:
+            font = ImageFont.truetype(name, size)
+        except Exception:
+            continue
+        _font_cache[cached_key] = font
+        return font
+    # 全部失败：回退 Pillow 默认字体（同样按 size 缓存）
+    font = _font_cache.get(("default", size))
+    if font is None:
+        font = ImageFont.load_default()
+        _font_cache[("default", size)] = font
+    return font
 
 
 class UndoStack:
@@ -250,11 +284,9 @@ def draw_brush(img, points, color, width):
 
 
 def draw_text(img, pos, text, color, font_size):
-    """在 img 上画文字。pos 为 (x, y)，font_size 为 int。"""
+    """在 img 上画文字。pos 为 (x, y)，font_size 为 int。
+
+    字体走中文字体链（见 _load_font），中文标注可正常渲染为真实字形。
+    """
     d = ImageDraw.Draw(img)
-    try:
-        from PIL import ImageFont
-        font = ImageFont.truetype("arial.ttf", font_size)
-    except Exception:
-        font = ImageFont.load_default()
-    d.text(pos, text, fill=color, font=font)
+    d.text(pos, text, fill=color, font=_load_font(font_size))

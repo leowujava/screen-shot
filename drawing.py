@@ -141,6 +141,32 @@ def _supersample_inplace(img, draw_fn, scale=4):
     return img
 
 
+def _supersample_local(img, x0, y0, x1, y1, draw_fn, scale=4):
+    """局部超采样：只在 [x0,y0,x1,y1] 包围盒范围内做 scale 倍超采样。
+
+    draw_fn(d, s) 接收局部层 Draw 对象与缩放系数，以局部层坐标
+    （图像坐标减去 (x0, y0) 原点，再 × s）绘制。包围盒可越界，
+    越界部分绘制后被丢弃。把结果合成回 img（保持原对象）。
+    """
+    W, H = img.size
+    bw, bh = x1 - x0, y1 - y0
+    if bw <= 0 or bh <= 0:
+        return img
+    layer = Image.new("RGBA", (bw * scale, bh * scale), (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer), scale)
+    small = layer.resize((bw, bh), Image.LANCZOS)
+    # small 覆盖的图像实际区域（与图像求交）
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1, cy1 = min(W, x1), min(H, y1)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return img
+    crop = small.crop((cx0 - x0, cy0 - y0, cx1 - x0, cy1 - y0))
+    patch = img.crop((cx0, cy0, cx1, cy1)).convert("RGBA")
+    patch.alpha_composite(crop)
+    img.paste(patch.convert(img.mode), (cx0, cy0))
+    return img
+
+
 def draw_arrow(img, start, end, color, width):
     """在 img 上画箭头（线条 + 三角箭头头），4x 超采样抗锯齿（原地修改）。
 
@@ -186,17 +212,23 @@ def draw_ellipse(img, box, color, width):
 
 
 def draw_brush(img, points, color, width):
-    """在 img 上画折线画笔（4x 超采样抗锯齿，圆头线帽）。points 为 [(x, y), ...]。"""
+    """在 img 上画折线画笔（4x 超采样抗锯齿，圆头线帽，局部作用域）。points 为 [(x, y), ...]。"""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    margin = max(2 * width, 8)  # ≥ LANCZOS 重采样窗口(3px) 与线宽，保证与整图超采样一致
+    x0, y0 = int(min(xs)) - margin, int(min(ys)) - margin
+    x1, y1 = int(max(xs)) + margin, int(max(ys)) + margin
+
     def draw(d, s):
         if len(points) == 1:
-            d.ellipse([(points[0][0] - width / 2) * s, (points[0][1] - width / 2) * s,
-                       (points[0][0] + width / 2) * s, (points[0][1] + width / 2) * s],
-                      fill=color)
+            px, py = points[0]
+            d.ellipse([(px - x0 - width / 2) * s, (py - y0 - width / 2) * s,
+                       (px - x0 + width / 2) * s, (py - y0 + width / 2) * s], fill=color)
         else:
-            d.line([(x * s, y * s) for x, y in points], fill=color,
+            d.line([((px - x0) * s, (py - y0) * s) for px, py in points], fill=color,
                    width=max(1, int(width * s)), joint="curve")
 
-    return _supersample_inplace(img, draw)
+    return _supersample_local(img, x0, y0, x1, y1, draw)
 
 
 def draw_text(img, pos, text, color, font_size):

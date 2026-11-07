@@ -108,3 +108,66 @@ class TestUndoStack:
         s.push("a")
         s.clear()
         assert s.pop() is None
+
+
+import time
+
+
+def _full_supersample_reference(img, points, color, width, scale=4):
+    """旧整图 4x 超采样的参考实现，用于逐像素对拍。"""
+    from PIL import ImageDraw
+    layer = Image.new("RGBA", (img.width * scale, img.height * scale), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    if len(points) == 1:
+        d.ellipse([(points[0][0] - width / 2) * scale, (points[0][1] - width / 2) * scale,
+                   (points[0][0] + width / 2) * scale, (points[0][1] + width / 2) * scale], fill=color)
+    else:
+        d.line([(x * scale, y * scale) for x, y in points], fill=color,
+               width=max(1, int(width * scale)), joint="curve")
+    small = layer.resize((img.width, img.height), Image.LANCZOS)
+    out = img.convert("RGBA")
+    out.alpha_composite(small)
+    return out.convert(img.mode)
+
+
+def test_draw_brush_matches_full_supersample():
+    """局部超采样必须与整图超采样一致（含触及图像边缘的线段）。
+
+    内部像素严格相等；贴边 4px 内的边界像素允许每通道 ≤8 的差异
+    （Pillow 重采样在图像边界会截断并重归一化 LANCZOS 核，局部层
+    几何不同导致该 1-2 级灰度差，视觉不可见）。
+    """
+    img = Image.new("RGB", (120, 120), (200, 210, 220))
+    points = [(2, 60), (60, 2), (118, 118)]  # 触及上/左/右/下边缘
+    expected = _full_supersample_reference(img, points, "#ff0000", 3)
+    result = img.copy()
+    draw_brush(result, points, "#ff0000", 3)
+    w, h = img.size
+    for i, (e, r) in enumerate(zip(expected.getdata(), result.getdata())):
+        x, y = divmod(i, w)
+        if 4 <= x < w - 4 and 4 <= y < h - 4:
+            assert e == r, f"内部像素 ({x},{y}) 不一致: {e} != {r}"
+        else:
+            diff = max(abs(a - b) for a, b in zip(e, r))
+            assert diff <= 8, f"边界像素 ({x},{y}) 差异过大: {e} != {r} (diff={diff})"
+
+
+def test_draw_brush_single_point_matches_reference():
+    img = Image.new("RGB", (60, 60), (10, 20, 30))
+    expected = _full_supersample_reference(img, [(30, 30)], "#00ff00", 5)
+    result = img.copy()
+    draw_brush(result, [(30, 30)], "#00ff00", 5)
+    assert list(result.getdata()) == list(expected.getdata())
+
+
+def test_draw_brush_perf_large_image():
+    """2000x1200 图上 30 段画笔应在 1 秒内完成（优化前每帧整图 4x ≈ 数十秒）。"""
+    big = Image.new("RGB", (2000, 1200), (255, 255, 255))
+    last = (100, 100)
+    t0 = time.perf_counter()
+    for i in range(30):
+        p = (100 + i * 8, 100 + i * 5)
+        draw_brush(big, [last, p], "#ff0000", 3)
+        last = p
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0, f"30 段画笔耗时 {elapsed:.2f}s（阈值 1.0s）"

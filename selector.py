@@ -28,6 +28,11 @@ PALETTE = ["#f5484d", "#3370ff", "#86909c",
 LABEL_BG = "#2b2f36"
 LABEL_FG = "#f5f6f8"
 
+# 选区边框配色：白色外线 + 深色内线（双线）。
+# 纯白边框在白色截图背景上不可见，双线保证任意背景下至少一条线可见。
+BORDER_OUTLINE = "white"
+BORDER_INNER = "#4e5969"
+
 # 十字准星颜色
 CROSSHAIR_COLOR = "red"
 CROSSHAIR_WIDTH = 1
@@ -525,6 +530,16 @@ class Selector:
     # 渲染
     # ------------------------------------------------------------------ #
 
+    def _update_border(self, l, t, r, b):
+        """选区边框：白色外线 + 内侧深色细线（双线），白/深背景均可见。"""
+        if "rect" not in self._items:
+            self._items["rect"] = self.canvas.create_rectangle(
+                0, 0, 0, 0, outline=BORDER_OUTLINE, width=2)
+            self._items["rect_inner"] = self.canvas.create_rectangle(
+                0, 0, 0, 0, outline=BORDER_INNER, width=1)
+        self.canvas.coords(self._items["rect"], l, t, r, b)
+        self.canvas.coords(self._items["rect_inner"], l + 2, t + 2, r - 2, b - 2)
+
     def _render_all(self):
         """渲染/更新全部。select 模式只画十字准星；adjust 模式画背景+遮罩+选区+边框+手柄+工具条。
 
@@ -561,10 +576,8 @@ class Selector:
         if self._region_img is not None:
             self._render_region(l, t)
 
-        # 选区边框
-        if "rect" not in self._items:
-            self._items["rect"] = self.canvas.create_rectangle(0, 0, 0, 0, outline="white", width=2)
-        self.canvas.coords(self._items["rect"], l, t, r, b)
+        # 选区边框（双线）
+        self._update_border(l, t, r, b)
 
         # 手柄
         self._render_handles(l, t, r, b)
@@ -639,10 +652,7 @@ class Selector:
         W, H = self._actual_w, self._actual_h
         if self.full_img is not None:
             self._render_selection_masks(l, t, r, b)
-            if "rect" not in self._items:
-                self._items["rect"] = self.canvas.create_rectangle(
-                    0, 0, 0, 0, outline="white", width=2)
-            self.canvas.coords(self._items["rect"], l, t, r, b)
+            self._update_border(l, t, r, b)
             return
         # 4 块 stipple 暗化
         if "m1" not in self._items:
@@ -650,18 +660,17 @@ class Selector:
             self._items["m2"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
             self._items["m3"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
             self._items["m4"] = self.canvas.create_rectangle(0, 0, 0, 0, fill="black", stipple="gray50", width=0)
-            self._items["rect"] = self.canvas.create_rectangle(0, 0, 0, 0, outline="white", width=2)
         self.canvas.coords(self._items["m1"], 0, 0, W, t)
         self.canvas.coords(self._items["m2"], 0, t, l, b)
         self.canvas.coords(self._items["m3"], r, t, W, b)
         self.canvas.coords(self._items["m4"], 0, b, W, H)
-        self.canvas.coords(self._items["rect"], l, t, r, b)
+        self._update_border(l, t, r, b)
         # 工具条
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
 
     def _clear_lightweight(self):
         """清理画框阶段的 stipple 矩形，为完整渲染做准备。"""
-        for key in ("m1", "m2", "m3", "m4", "rect"):
+        for key in ("m1", "m2", "m3", "m4", "rect", "rect_inner"):
             if key in self._items:
                 try:
                     self.canvas.delete(self._items[key])
@@ -733,9 +742,10 @@ class Selector:
         if "handles" not in self._items:
             handles = {}
             for name, (hx, hy) in coords.items():
+                # 白底 + 深色描边：白色截图背景上手柄依然可见
                 handles[name] = self.canvas.create_rectangle(
                     hx - s, hy - s, hx - s + 2 * s, hy - s + 2 * s,
-                    fill="#ffffff", outline=TB_BG, width=1)
+                    fill="#ffffff", outline=BORDER_INNER, width=1)
             self._items["handles"] = handles
         else:
             h = self._items["handles"]
@@ -1078,8 +1088,7 @@ class Selector:
         if "region" in self._items:
             self.canvas.delete(self._items.pop("region"))
         self._region_photo = None
-        if "rect" in self._items:
-            self.canvas.coords(self._items["rect"], l, t, r, b)
+        self._update_border(l, t, r, b)
         self._render_handles(l, t, r, b)
         self._tb_show((l, t, r, b), (l, t, r - l, b - t))
 

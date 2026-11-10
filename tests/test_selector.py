@@ -738,6 +738,49 @@ def test_render_all_in_adjust_mode_reuses_selection_masks(fake_root):
     assert mask_image.getpixel((0, 0)) == (0, 0, 0, 128)
 
 
+def test_border_double_line_and_handle_outline(fake_root):
+    """选框双线（白外线 + 深色内线）且手柄带深色描边。
+
+    回归：选框与手柄曾为纯白，白色截图背景上完全不可见。
+    """
+    from selector import BORDER_INNER
+    full = Image.new("RGB", (100, 100), (255, 255, 255))  # 白色背景
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel._render_all()
+
+    assert "rect" in sel._items
+    assert "rect_inner" in sel._items
+
+    # 内线必须是非白深色（白色背景上双线至少一条可见）
+    assert BORDER_INNER != "white"
+    inner_creates = [
+        c for c in sel.canvas.create_rectangle.call_args_list
+        if c.kwargs.get("outline") == BORDER_INNER and "fill" not in c.kwargs
+    ]
+    assert inner_creates, "缺少深色内线"
+
+    # 手柄：白底 + 深色描边（白色背景上依然可见）
+    handle_creates = [
+        c for c in sel.canvas.create_rectangle.call_args_list
+        if c.kwargs.get("fill") == "#ffffff"
+    ]
+    assert handle_creates and all(
+        c.kwargs.get("outline") == BORDER_INNER for c in handle_creates)
+
+    # 内线位于外线内侧 2px
+    sel.canvas.coords.reset_mock()
+    sel._update_border(10, 10, 90, 90)
+    coords = [c.args[-4:] for c in sel.canvas.coords.call_args_list]
+    assert (10, 10, 90, 90) in coords
+    assert (12, 12, 88, 88) in coords
+
+
 def test_render_all_in_select_mode_no_masks(fake_root):
     """select 模式下 _render_all 不应创建遮罩/选区图。"""
     sel = Selector(x=0, y=0, width=200, height=200, full_img=None,
@@ -1039,12 +1082,14 @@ def test_selection_masks_cover_all_outside_areas(fake_root):
 
     sel._render_lightweight(20, 30, 70, 80)
     lightweight_coords = [call.args[1:] for call in sel.canvas.coords.call_args_list]
-    assert lightweight_coords[-5:] == [
+    # 4 块遮罩 + 选区双线边框（白外线 + 深色内线，内线在外线内侧 2px）
+    assert lightweight_coords[-6:] == [
         (0, 0, 100, 30),
         (0, 30, 20, 80),
         (70, 30, 100, 80),
         (0, 80, 100, 100),
         (20, 30, 70, 80),
+        (22, 32, 68, 78),
     ]
 
     sel.canvas.create_image.reset_mock()

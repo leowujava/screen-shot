@@ -174,8 +174,8 @@ def main():
             _make_tray_icon_image(),
             "截图工具",
             pystray.Menu(
-                # 不设置 default=True：左键点击图标不弹出菜单，仅右键显示本菜单
-                pystray.MenuItem("框选截图", lambda i, m: do_region_capture()),
+                # default=True：左键点击图标直接触发框选截图（右键菜单中该项照常保留）
+                pystray.MenuItem("框选截图", lambda i, m: do_region_capture(), default=True),
                 pystray.MenuItem("全屏截图", lambda i, m: do_fullscreen_capture()),
                 pystray.MenuItem("复制截图", lambda i, m: do_copy_capture()),
                 pystray.MenuItem("退出", lambda i, m: on_quit()),

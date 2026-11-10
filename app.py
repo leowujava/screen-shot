@@ -128,49 +128,6 @@ def do_copy_capture():
     threading.Thread(target=worker, daemon=True).start()
 
 
-def _tray_icon_rect():
-    """返回托盘图标在虚拟桌面中的屏幕矩形 (left, top, right, bottom)。
-
-    通过枚举系统托盘通知区域，匹配本进程图标所在按钮。失败时返回 None。
-    """
-    import ctypes.wintypes as wt
-    user32 = ctypes.windll.user32
-
-    taskbar = user32.FindWindowW("Shell_TrayWnd", None)
-    if not taskbar:
-        return None
-    notify = user32.FindWindowExW(taskbar, 0, "SystemTray.Notify", None)
-    if not notify:
-        notify = user32.FindWindowExW(taskbar, 0, "TrayNotifyWnd", None)
-    if not notify:
-        return None
-    toolbar = user32.FindWindowExW(notify, 0, "ToolbarWindow32", None)
-    if not toolbar:
-        return None
-
-    pid = os.getpid()
-    hwnd_list = []
-
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
-    def enum_cb(hwnd, lparam):
-        wpid = wt.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
-        if wpid.value == pid:
-            hwnd_list.append(hwnd)
-        return True
-
-    user32.EnumChildWindows(toolbar, enum_cb, 0)
-
-    for hwnd in hwnd_list:
-        rect = wt.RECT()
-        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            pt = wt.POINT(rect.left, rect.top)
-            user32.ClientToScreen(hwnd, ctypes.byref(pt))
-            return (pt.x, pt.y, pt.x + (rect.right - rect.left),
-                    pt.y + (rect.bottom - rect.top))
-    return None
-
-
 def _make_tray_icon_image():
     """生成托盘图标（相机外形）。"""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -181,123 +138,16 @@ def _make_tray_icon_image():
     return img
 
 
-class FloatingMenu:
-    """悬浮菜单：在指定屏幕坐标处弹出无边框置顶菜单。
-
-    items: [(label, command), ...]
-    root:  共享 Tk 根窗口（菜单作为其 Toplevel 打开，由主循环驱动）
-    """
-
-    # 主题色（与编辑器保持一致）
-    BG = "#2b2f36"
-    FG = "#f5f6f8"
-    HOVER = "#4a90e2"
-    HOVER_FG = "#ffffff"
-    SEP = "#3a3f47"
-    FONT = ("Microsoft YaHei UI", 10)
-    PAD_X = 14
-    PAD_Y = 6
-    MIN_W = 140
-
-    def __init__(self, items, root):
-        self.items = items
-        self.root = root
-        self.win = None
-        self._buttons = []
-        self._pos = (100, 100)
-
-    def show_at(self, x, y):
-        """在屏幕坐标 (x, y) 处弹出菜单（非阻塞）。"""
-        self.close()
-        self._pos = (x, y)
-        self.win = tk.Toplevel(self.root)
-        self.win.wm_overrideredirect(True)   # 无边框（不占用任务栏）
-        self.win.wm_attributes("-topmost", True)
-        self.win.configure(bg=self.BG, bd=1, relief="solid")
-        self.win.geometry(f"+{x}+{y}")
-
-        inner = tk.Frame(self.win, bg=self.BG)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-
-        for i, (label, command) in enumerate(self.items):
-            if label is None:  # 分隔线
-                sep = tk.Frame(inner, height=1, bg=self.SEP, highlightthickness=0)
-                sep.pack(fill="x", padx=6, pady=4)
-                continue
-            btn = tk.Label(
-                inner, text=label, anchor="w",
-                fg=self.FG, bg=self.BG,
-                font=self.FONT, padx=self.PAD_X, pady=self.PAD_Y,
-            )
-            btn.pack(fill="x")
-            btn.bind("<Enter>", lambda e, b=btn: b.configure(bg=self.HOVER, fg=self.HOVER_FG))
-            btn.bind("<Leave>", lambda e, b=btn: b.configure(bg=self.BG, fg=self.FG))
-            btn.bind("<Button-1>", lambda e, c=command: (c(), self.close()))
-            self._buttons.append(btn)
-
-        # 点击菜单外部时关闭
-        self.win.bind("<FocusOut>", lambda e: self._close_on_outside())
-        # 点击自身以外的任意位置：用全局鼠标钩子太侵入，改用 Esc + FocusOut
-        self.win.bind("<Escape>", lambda e: self.close())
-
-        self.win.update_idletasks()
-        # 若超出屏幕右/下边缘则回拉
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        mw = self.win.winfo_width()
-        mh = self.win.winfo_height()
-        if x + mw > sw:
-            self.win.geometry(f"+{sw - mw}+{y}")
-        if y + mh > sh:
-            self.win.geometry(f"+{x}+{sh - mh}")
-
-        self.win.lift()
-        self.win.focus_force()
-
-    def _close_on_outside(self):
-        """FocusOut 时，若鼠标已不在菜单内则关闭。"""
-        if self.win is None:
-            return
-        # 延迟判断，避免菜单内部焦点切换误触发
-        self.root.after(50, self._check_outside)
-
-    def _check_outside(self):
-        if self.win is None:
-            return
-        try:
-            # 用鼠标当前位置判断是否在菜单窗口内
-            import pynput.mouse as _pm
-            x, y = _pm.Position()
-            wx = self.win.winfo_rootx()
-            wy = self.win.winfo_rooty()
-            ww = self.win.winfo_width()
-            wh = self.win.winfo_height()
-            if not (wx <= x <= wx + ww and wy <= y <= wy + wh):
-                self.close()
-        except Exception:
-            pass
-
-    def close(self):
-        if self.win is not None:
-            try:
-                self.win.destroy()
-            except tk.TclError:
-                pass
-            self.win = None
-            self._buttons = []
-
-
 def main():
     """主入口。
 
     - 主线程：创建共享 Tk 根窗口 + 运行 pynput 快捷键监听（两者都要求主线程），
       最后进入 Tk mainloop 驱动所有 GUI 窗口。
     - 子线程：pystray 托盘（阻塞）、耗时的截图/保存/剪贴板。
-    - 所有 GUI（选区、编辑器、悬浮菜单）都挂到同一个共享根窗口上，
+    - 所有 GUI（选区等窗口）都挂到同一个共享根窗口上，
       避免多个 Tk 根互相破坏 Tcl 解释器（image 丢失、窗口卡住）。
     """
     tray_holder = {}
-    _menu_holder = {}
 
     def on_quit():
         """退出：停止托盘 → 退出主循环 → 强制结束进程。
@@ -318,41 +168,14 @@ def main():
             _tk_root_holder["root"].after(50, lambda: os._exit(0)),
         ))
 
-    def _get_menu():
-        if "menu" not in _menu_holder:
-            items = [
-                ("📷 框选截图", do_region_capture),
-                ("🖥 全屏截图", do_fullscreen_capture),
-                ("📋 复制截图", do_copy_capture),
-                (None, None),  # 分隔线
-                ("✕ 退出", on_quit),
-            ]
-            _menu_holder["menu"] = FloatingMenu(items, _tk_root_holder["root"])
-        return _menu_holder["menu"]
-
-    def _show_floating_menu():
-        """在托盘图标位置弹出悬浮菜单（调度回主线程执行）。"""
-        def _show():
-            menu = _get_menu()
-            rect = _tray_icon_rect()
-            if rect:
-                x, y, _, _ = rect
-                # 菜单从图标底部弹出
-                menu.show_at(x, y + 40)
-            else:
-                # 回退：屏幕右下角
-                sw = _tk_root_holder["root"].winfo_screenwidth()
-                sh = _tk_root_holder["root"].winfo_screenheight()
-                menu.show_at(sw - 200, sh - 200)
-        _run_on_main(_show)
-
     def run_tray():
         icon = pystray.Icon(
             "screen-shot",
             _make_tray_icon_image(),
             "截图工具",
             pystray.Menu(
-                pystray.MenuItem("框选截图", lambda i, m: _show_floating_menu(), default=True),
+                # 不设置 default=True：左键点击图标不弹出菜单，仅右键显示本菜单
+                pystray.MenuItem("框选截图", lambda i, m: do_region_capture()),
                 pystray.MenuItem("全屏截图", lambda i, m: do_fullscreen_capture()),
                 pystray.MenuItem("复制截图", lambda i, m: do_copy_capture()),
                 pystray.MenuItem("退出", lambda i, m: on_quit()),

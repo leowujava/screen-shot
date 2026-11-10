@@ -118,7 +118,10 @@ class Selector:
         self.tool = "move"
         self.color = PALETTE[0]
         self.width_attr = 3
-        self.undo = UndoStack(maxlen=10)
+        # 撤销深度上限：每笔标注都保存一份选区图副本。上限过低（如 10）时，
+        # 画满上限后最旧快照被挤出，撤销到栈空也回不到干净底图（"撤销没干净"）。
+        # 50 笔足以覆盖正常标注量，且内存可控（每份 ≈ 选区尺寸 × 3 字节）。
+        self.undo = UndoStack(maxlen=50)
         self.drawing = False
         self.draw_start = None
         self._brush_last = None

@@ -627,6 +627,43 @@ def test_undo_renders_last_image(fake_root):
     mock_render.assert_called_once_with(10, 10)
 
 
+def test_undo_fully_reverts_many_strokes(fake_root):
+    """回归：多笔标注全部撤销后，选区图必须精确回到干净底图。
+
+    此前 maxlen=10，画的笔数超过 10 后最旧快照被挤出栈，
+    撤销到栈空也回不到干净底图，前几笔标注残留在图上（"撤销没干净"）。
+    """
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = Selector(x=0, y=0, width=100, height=100, full_img=full,
+                   on_select=lambda r, i: None,
+                   on_copy=lambda r, i: None,
+                   on_save=lambda r, i: None)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    clean = sel._region_img.copy()  # 干净底图
+    sel.tool = "rect"; sel.color = "#ff0000"; sel.width_attr = 2
+
+    class E:
+        def __init__(self, x, y): self.x, self.y = x, y
+
+    n = 15  # 超过旧上限 10
+    for i in range(n):
+        # 每笔画在不同位置（选区内、避开 8 个手柄的 6px 热区），避免相互覆盖
+        x0 = 20 + (i % 5) * 15
+        y0 = 20 + (i // 5) * 20
+        sel._on_press(E(x0, y0))
+        sel._on_release(E(x0 + 10, y0 + 10))
+
+    # 画满 n 笔后撤销栈应完整保留 n 份快照（不被挤出）
+    assert len(sel.undo) == n
+
+    # 撤销 n 次 → 选区图必须精确等于干净底图
+    for _ in range(n):
+        sel._undo()
+    assert sel._region_img.tobytes() == clean.tobytes()
+
+
 def test_mosaic_annotation(fake_root):
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     d = ImageDraw.Draw(full)

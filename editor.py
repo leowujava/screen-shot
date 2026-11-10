@@ -92,7 +92,9 @@ class Editor:
         self.image = image.copy()
         self.original = image.copy()
         self.on_close = on_close
-        self.undo = UndoStack(maxlen=10)
+        # 撤销深度上限：每笔都保存一份整图副本。上限过低时画满上限后最旧快照被挤出，
+        # 撤销到栈空也回不到干净底图（"撤销没干净"）。50 笔足以覆盖正常标注量。
+        self.undo = UndoStack(maxlen=50)
         self.tool = "brush"
         self.color = "#f5484d"  # 默认红色（与选区工具条默认色一致）
         # 画布背景色（可设置，持久化到设置文件）

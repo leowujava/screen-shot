@@ -382,6 +382,77 @@ def test_toolbar_has_all_buttons(sel_env):
         assert isinstance(b, QToolButton), f"按钮类型不对: {b}"
 
 
+def _icon_avg_color(icon, size=20):
+    """图标非透明像素的平均 (r, g, b)。"""
+    img = icon.pixmap(size, size).toImage()
+    rs = gs = bs = n = 0
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() > 8:
+                rs += c.red()
+                gs += c.green()
+                bs += c.blue()
+                n += 1
+    if n == 0:
+        return (0, 0, 0)
+    return (rs // n, gs // n, bs // n)
+
+
+def test_all_toolbar_buttons_use_drawn_icons(sel_env):
+    """全部 14 个工具条按钮（7 工具 + 7 操作）都用矢量绘制图标，不用 emoji 文本。
+
+    回归：emoji/特殊符号（🔍 🎨 💾 ↩ ⧉ ✓ ✕ ✥ ✏ 等）依赖字体回退，
+    在 28×24 小按钮上模糊或缺字形；改用 QPainter 高倍绘制的 QIcon 后
+    任意 DPI 下清晰、风格一致、易识别。
+    """
+    import selector as s
+    sel = _make(sel_env, width=1920, height=1080)
+    # 7 个工具按钮
+    for tool in s.Selector.TOOLS:
+        b = sel._tool_btns[tool]
+        assert b.text() == "", f"工具 {tool} 不应使用文本图标"
+        assert not b.icon().isNull(), f"工具 {tool} 应有矢量图标"
+        assert b.toolButtonStyle() == Qt.ToolButtonIconOnly
+    # 7 个操作按钮
+    for key in ("color", "undo", "ocr", "copy", "save", "confirm", "cancel"):
+        b = sel._tb_btns[key]
+        assert b.text() == "", f"操作 {key} 不应使用文本图标"
+        assert not b.icon().isNull(), f"操作 {key} 应有矢量图标"
+        assert b.toolButtonStyle() == Qt.ToolButtonIconOnly
+
+
+def test_all_icon_painters_produce_non_null_qicons(sel_env):
+    """全部 14 个图标绘制函数都应产出有效非空 QIcon。"""
+    import selector as s
+    fns = list(s.TOOL_ICON_FNS.values()) + [
+        s._paint_icon_ocr, s._paint_icon_color, s._paint_icon_save,
+        s._paint_icon_undo, s._paint_icon_copy,
+        s._paint_icon_confirm, s._paint_icon_cancel,
+    ]
+    assert len(fns) == 14, "应有 14 个图标绘制函数"
+    for fn in fns:
+        icon = s._tb_icon(fn)
+        assert not icon.isNull(), f"{fn.__name__} 产出的 QIcon 为空"
+        assert icon.availableSizes()
+
+
+def test_tool_icon_state_colors(sel_env):
+    """工具图标随状态换色：选中=蓝、非选中=深色、禁用=浅灰。"""
+    sel = _make(sel_env, width=1920, height=1080)
+    sel._set_toolbar_enabled(True)  # adjust 模式：启用工具
+    # 选中工具（默认 move）→ 蓝色（B 通道最高）
+    r, g, b = _icon_avg_color(sel._tool_btns["move"].icon())
+    assert b > r and b > g, f"选中工具图标应为蓝色，实际 {(r, g, b)}"
+    # 非选中工具 → 深色
+    r, g, b = _icon_avg_color(sel._tool_btns["rect"].icon())
+    assert r < 90 and g < 90 and b < 90, f"非选中工具图标应为深色，实际 {(r, g, b)}"
+    # 禁用（select 模式）→ 浅灰
+    sel._set_toolbar_enabled(False)
+    r, g, b = _icon_avg_color(sel._tool_btns["move"].icon())
+    assert r > 120 and g > 120 and b > 120, f"禁用工具图标应为浅灰，实际 {(r, g, b)}"
+
+
 def test_select_tool_updates_state(sel_env):
     """点击工具按钮应更新 self.tool。"""
     sel = _make(sel_env, width=1920, height=1080)
@@ -966,3 +1037,129 @@ def test_ocr_result_dialog_copy_all(sel_env):
     from PySide6.QtWidgets import QDialog
     assert dlg.result() == QDialog.Accepted
     cc.assert_called_once_with("line1\nline2")
+
+
+# =================================================================== #
+# 工具条图标与顺序（对齐参考设计截图：Lucide 风格细线条图标）
+# =================================================================== #
+
+def _icon_lum(icon, size=20):
+    """图标取点函数：lum(fx, fy) 返回逻辑位置 (0..1) 处墨迹灰度；
+    透明（无墨迹）处按 255（白）计。"""
+    img = icon.pixmap(size, size).toImage()
+    W, H = img.width(), img.height()
+
+    def lum(fx, fy):
+        x = max(0, min(W - 1, int(round(fx * (W - 1)))))
+        y = max(0, min(H - 1, int(round(fy * (H - 1)))))
+        c = img.pixelColor(x, y)
+        return c.lightness() if c.alpha() > 8 else 255
+
+    return lum
+
+
+def test_toolbar_tool_order_matches_reference(sel_env):
+    """工具按钮顺序对齐参考设计：move → 矩形 → 圆 → 箭头 → 画笔 → 文字 → 马赛克。"""
+    sel = _make(sel_env, width=1920, height=1080)
+    assert list(sel_mod.Selector.TOOLS) == [
+        "move", "rect", "ellipse", "arrow", "brush", "text", "mosaic"]
+    # 按钮创建顺序 = 工具条从左到右顺序
+    btns = sel.tb_win.findChildren(QToolButton)
+    for i, tool in enumerate(sel_mod.Selector.TOOLS):
+        assert btns[i] is sel._tool_btns[tool], f"工具条第 {i} 位应为 {tool} 工具"
+
+
+def test_toolbar_action_tail_order(sel_env):
+    """尾部动作按钮顺序对齐参考设计：复制 → 保存(下载) → 取消(红 X) → 确认(绿 ✓)。"""
+    sel = _make(sel_env, width=1920, height=1080)
+    btns = sel.tb_win.findChildren(QToolButton)
+    idx = {b: i for i, b in enumerate(btns)}
+    order = [idx[sel._tb_btns[k]] for k in ("copy", "save", "cancel", "confirm")]
+    assert order == sorted(order), f"尾部顺序应为 复制→保存→取消→确认，实际索引 {order}"
+
+
+def test_mosaic_icon_frame_with_x_cells(sel_env):
+    """马赛克图标 = 圆角方框 + X 形 5 格填充（四角 + 中心），边缘中点不填充。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_mosaic))
+    for fx, fy in ((0.3, 0.3), (0.7, 0.3), (0.5, 0.5), (0.3, 0.7), (0.7, 0.7)):
+        assert lum(fx, fy) < 100, f"马赛克图标 ({fx}, {fy}) 处应有填充格"
+    for fx, fy in ((0.5, 0.3), (0.3, 0.5), (0.7, 0.5), (0.5, 0.7)):
+        assert lum(fx, fy) > 150, f"马赛克图标边缘中点 ({fx}, {fy}) 不应填充"
+
+
+def test_ocr_icon_is_scan_text(sel_env):
+    """OCR 图标 = 扫描文本样式（参考设计）：四个 L 形角框 + 中央 3 条文本行。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_ocr))
+    # 四角框角点
+    for fx, fy in ((0.24, 0.24), (0.76, 0.24), (0.76, 0.76), (0.24, 0.76)):
+        assert lum(fx, fy) < 100, f"OCR 图标 ({fx}, {fy}) 处应有角框"
+    # 中央文本行
+    for fx, fy in ((0.5, 0.40), (0.5, 0.50), (0.45, 0.60)):
+        assert lum(fx, fy) < 100, f"OCR 图标 ({fx}, {fy}) 处应有文本行"
+    # 角框之间的空隙
+    assert lum(0.5, 0.24) > 150, "OCR 图标顶边中部应为角框空隙"
+    # 顶角框与文本行之间的空白
+    assert lum(0.5, 0.30) > 150, "OCR 图标角框与文本行之间应为空白"
+
+
+def test_save_icon_is_download(sel_env):
+    """保存图标 = 下载样式（向下箭头 + 底部托盘），不再是软盘。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_save))
+    assert lum(0.5, 0.35) < 100, "保存图标应有垂直箭杆"
+    assert lum(0.5, 0.61) < 100, "保存图标箭头尖端应朝下"
+    assert lum(0.5, 0.78) < 100, "保存图标应有底部托盘"
+    assert lum(0.25, 0.5) > 150, "保存图标左侧应为空白"
+
+
+def test_undo_icon_is_hook_arrow(sel_env):
+    """撤销图标 = 钩状回转箭头（左指箭头 + C 形钩），不是整圈回旋。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_undo))
+    assert lum(0.28, 0.38) < 100, "撤销图标箭头应指向左"
+    assert lum(0.5, 0.68) < 100, "撤销图标底部应有钩形弧线"
+    assert lum(0.78, 0.3) > 150, "撤销图标右上应为空白"
+
+
+def test_arrow_icon_has_open_arrowhead(sel_env):
+    """箭头图标 = 斜线杆 + 尖端直角开口箭头（Lucide arrow-up-right 风格）。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_arrow))
+    assert lum(0.72, 0.28) < 100, "箭头图标尖端应在右上"
+    assert lum(0.55, 0.28) < 100, "箭头图标应有水平翼"
+    assert lum(0.72, 0.45) < 100, "箭头图标应有垂直翼"
+    assert lum(0.45, 0.55) < 100, "箭头图标应有斜向线杆"
+
+
+def test_brush_icon_has_squiggle(sel_env):
+    """画笔图标 = 45° 铅笔 + 左下波浪线（参考设计带下划波浪的钢笔样式）。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_brush))
+    assert lum(0.55, 0.45) < 100, "画笔图标应有铅笔"
+    assert lum(0.35, 0.75) < 100, "画笔图标左下应有波浪线"
+
+
+def test_text_icon_has_serifs(sel_env):
+    """文字图标 = 衬线 T（顶横 + 两侧衬线 + 底部衬线）。"""
+    lum = _icon_lum(sel_mod._tb_icon(sel_mod._paint_icon_text))
+    assert lum(0.5, 0.28) < 100, "文字图标应有顶横"
+    assert lum(0.5, 0.5) < 100, "文字图标应有竖杆"
+    assert lum(0.5, 0.72) < 100, "文字图标应有底部衬线"
+    # 顶横两端下探的衬线（无衬线 T 在此处为空白）
+    assert lum(0.31, 0.33) < 100, "文字图标左端应有衬线"
+    assert lum(0.69, 0.33) < 100, "文字图标右端应有衬线"
+    assert lum(0.68, 0.5) > 150, "文字图标右侧应为空白"
+
+
+def test_rect_ellipse_icons_are_square_proportion(sel_env):
+    """矩形 / 圆形图标墨迹包围盒应接近正方形（参考设计为方 / 正圆，
+    而非旧的扁矩形 / 扁椭圆）。"""
+    def bbox_ratio(fn):
+        img = sel_mod._tb_icon(fn).pixmap(20, 20).toImage()
+        minx = miny = 99
+        maxx = maxy = -1
+        for y in range(img.height()):
+            for x in range(img.width()):
+                if img.pixelColor(x, y).alpha() > 8:
+                    minx, maxx = min(minx, x), max(maxx, x)
+                    miny, maxy = min(miny, y), max(maxy, y)
+        return (maxx - minx + 1) / (maxy - miny + 1)
+
+    assert 0.9 <= bbox_ratio(sel_mod._paint_icon_rect) <= 1.1, "矩形图标应为方形比例"
+    assert 0.9 <= bbox_ratio(sel_mod._paint_icon_ellipse) <= 1.1, "圆形图标应为正圆"

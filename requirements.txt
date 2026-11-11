@@ -5,3 +5,4 @@ pystray
 pywin32
 rapidocr
 onnxruntime
+PySide6

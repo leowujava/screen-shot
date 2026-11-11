@@ -45,7 +45,7 @@ def test_do_copy_capture_reports_clipboard_failure():
 
     with patch.object(app, "capture_fullscreen", fake_capture), \
          patch.object(app, "copy_to_clipboard", side_effect=RuntimeError("clipboard busy")), \
-         patch("tkinter.messagebox.showerror", mock_err):
+         patch.object(app.QMessageBox, "critical", mock_err):
         app.do_copy_capture()
         assert shown.wait(5)
     mock_err.assert_called_once()

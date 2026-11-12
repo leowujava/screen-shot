@@ -21,11 +21,13 @@ import math
 import sys
 import threading
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import (
+    QBrush,
     QColor,
+    QPolygonF,
     QFont,
     QFontMetrics,
     QGuiApplication,
@@ -53,8 +55,9 @@ from PySide6.QtWidgets import (
 )
 
 from drawing import (
-    draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text, mosaic,
-    UndoStack, get_ocr_engine, ocr_result_to_text, alt_pressed,
+    arrow_geometry, draw_arrow, draw_rect, draw_ellipse, draw_brush,
+    draw_text, mosaic, UndoStack, get_ocr_engine, ocr_result_to_text,
+    alt_pressed,
 )
 
 # 选区完成回调常量（保留向后兼容）
@@ -429,13 +432,16 @@ class _Toolbar(QWidget):
         self._selector = selector
 
     def keyPressEvent(self, e):
+        sel = self._selector
+        if sel is None:  # selector 已清理：按键直接忽略，避免事件晚到时崩溃
+            return
         k = e.key()
         if k == Qt.Key_Escape:
-            self._selector._cancel()
+            sel._cancel()
         elif k in (Qt.Key_Return, Qt.Key_Enter):
-            self._selector._confirm()
+            sel._confirm()
         elif k == Qt.Key_Z and (e.modifiers() & Qt.ControlModifier):
-            self._selector._undo()
+            sel._undo()
         else:
             super().keyPressEvent(e)
 
@@ -666,8 +672,9 @@ class Selector(QWidget):
     def _build_toolbar(self):
         # 必须是独立顶层窗口（parent=None）：作为 overlay 的子窗口时，
         # Windows 会按父窗口坐标系摆放并裁剪，导致跟随定位错位。
-        # self 持有引用，不会被提前 GC。
-        self.tb_win = _Toolbar(None)
+        # self 持有引用，不会被提前 GC。传 self 使工具条可响应
+        # Esc/Enter/Ctrl+Z（见 _Toolbar.keyPressEvent）。
+        self.tb_win = _Toolbar(self)
         self.tb_win.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.tb_win.setFont(QFont("Microsoft YaHei UI", 10))
         self.tb_win.setStyleSheet(
@@ -1006,15 +1013,16 @@ class Selector(QWidget):
         color = QColor(self.color)
         if prev["tool"] == "arrow":
             (x0, y0), (x1, y1) = prev["start"], prev["end"]
-            p.setPen(QPen(color, self.width_attr))
-            p.drawLine(x0, y0, x1, y1)
-            # 简易三角箭头头
-            ang = math.atan2(y1 - y0, x1 - x0)
-            hl = max(8.0, 2.5 * self.width_attr)
-            for da in (-0.55, 0.55):
-                p.drawLine(x1, y1,
-                           int(x1 - hl * math.cos(ang + da)),
-                           int(y1 - hl * math.sin(ang + da)))
+            # 与最终渲染（draw_arrow）共用同一几何：锥形杆 + 实心三角
+            shaft, head_pts = arrow_geometry((x0, y0), (x1, y1), self.width_attr)
+            if shaft is None:  # 太短：画一条短线
+                p.setPen(QPen(color, self.width_attr))
+                p.drawLine(x0, y0, x1, y1)
+                return
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(color))
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in shaft]))
+            p.drawPolygon(QPolygonF([QPointF(x, y) for x, y in head_pts]))
             return
         px0, py0, px1, py1 = prev["box"]
         rect = QRectF(px0, py0, px1 - px0, py1 - py0)
@@ -1093,6 +1101,23 @@ class Selector(QWidget):
             return
         l, t, r, b = self._region
         self._region_img = self.full_img.crop((l, t, r, b))
+
+    def _rebase_annotations(self, img, old_base, new_base):
+        """选区移动（尺寸不变）：把 img 的标注层重新定基到新位置。
+
+        标注层 = img 与旧位置底图 old_base 的像素差（含抗锯齿边缘）；
+        贴到新位置底图 new_base 上——新位置的屏幕内容可见，标注跟随保留。
+        无标注（纯白/原图）时返回 new_base 的副本（仅位置变化）。
+        """
+        if img.size != new_base.size:
+            return img
+        mask = ImageChops.difference(img, old_base).convert("L").point(
+            lambda v: 255 if v else 0)
+        if mask.getbbox() is None:
+            return new_base.copy()
+        base = new_base.copy()
+        base.paste(img, (0, 0), mask)
+        return base
 
     def _adjust_region(self):
         """调整选区后重新 crop、清空标注和撤销栈。"""
@@ -1339,6 +1364,7 @@ class Selector(QWidget):
         completed_move = (
             self._drag_op is not None and self._drag_op[1] == "move"
         )
+        moved_from = self._drag_region  # 拖动开始时的选区（移动重定基用）
         self.start = None
         self._drag_op = None
         self._drag_start = None
@@ -1370,8 +1396,26 @@ class Selector(QWidget):
             self.update()
             return
         if completed_move and self.full_img is not None:
-            self.undo.clear()
-            self._init_region_img()
+            # 移动保持尺寸：标注跟随内容——把标注层（旧图与旧位置底图的差）贴到
+            # 新位置底图上；撤销快照同样重新定基，Ctrl+Z 依然有效。
+            l, t, r, b = self._region
+            old_img = self._region_img
+            old_region = moved_from
+            if (old_img is not None and old_region is not None
+                    and old_img.size == (r - l, b - t)):
+                old_base = self.full_img.crop(old_region)
+                if old_base.size == old_img.size:
+                    new_base = self.full_img.crop((l, t, r, b))
+                    self._region_img = self._rebase_annotations(
+                        old_img, old_base, new_base)
+                    self.undo.map(
+                        lambda im: self._rebase_annotations(
+                            im, old_base, new_base))
+                else:
+                    self._init_region_img()
+            else:
+                # 尺寸变了（贴边被裁剪；移动中 _adjust_region 已重裁并清空标注）
+                self._init_region_img()
             self._masks_hidden = False
             self._render_all()
             self.update()

@@ -103,6 +103,28 @@ def test_selector_cancel_passes_none(sel_env):
     assert results["img"] is None
 
 
+def test_toolbar_keypress_routes_to_selector(sel_env):
+    """工具条按键转发给 selector（回归：_Toolbar(None) 导致 _selector 为 None 崩溃）。"""
+    from PySide6.QtGui import QKeyEvent
+    sel = _make(sel_env)
+    assert sel.tb_win._selector is sel
+    calls = []
+    sel._cancel = lambda: calls.append("cancel")
+    sel._confirm = lambda: calls.append("confirm")
+    sel._undo = lambda: calls.append("undo")
+    sel.tb_win.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    sel.tb_win.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Enter, Qt.NoModifier))
+    sel.tb_win.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Z, Qt.ControlModifier))
+    assert calls == ["cancel", "confirm", "undo"]
+
+
+def test_toolbar_keypress_ignores_when_selector_gone(sel_env):
+    """_selector 为 None（selector 已清理）时按键直接忽略，不抛 AttributeError。"""
+    from PySide6.QtGui import QKeyEvent
+    tb = sel_mod._Toolbar(None)
+    tb.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+
 def test_selector_captures_screen_after_initial_selection(sel_env):
     """首次框选完成时才捕获整屏，选框移动时显示截图对应位置。"""
     full = Image.new("RGB", (200, 200), (255, 255, 255))
@@ -176,6 +198,40 @@ def test_moving_selection_reveals_new_area_of_fixed_screenshot(sel_env):
     sel.mouseReleaseEvent(Event(50, 55))
     assert sel._region_img is not old_crop
     assert sel._masks_hidden is False
+
+
+def test_moving_selection_keeps_annotations(sel_env):
+    """移动选区框后标注不丢失：标注跟随内容移动，撤销栈保留（回归：移动清空标注）。"""
+    # 全白底 + 右侧一条黑带：移动选区跨入黑带可验证底图确实换了位置
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    ImageDraw.Draw(full).rectangle([120, 0, 139, 199], fill=(0, 0, 0))
+    sel = _make(sel_env, full_img=full)
+    # 画选区 (20,20,80,80)，60x60
+    sel.mousePressEvent(Event(20, 20))
+    sel.mouseMoveEvent(Event(80, 80))
+    sel.mouseReleaseEvent(Event(80, 80))
+    # 画一个红色矩形标注（局部 10,10 - 40,40）
+    sel._select_tool("rect")
+    sel.mousePressEvent(Event(30, 30))
+    sel.mouseMoveEvent(Event(60, 60))
+    sel.mouseReleaseEvent(Event(60, 60))
+    assert len(sel.undo) == 1
+    assert _close(sel._region_img.getpixel((10, 25)), (245, 72, 77), 40)
+    # 整体移动选区：(20,20,80,80) → (120,20,180,80)（跨入黑带）
+    sel._select_tool("move")
+    sel.mousePressEvent(Event(40, 40))
+    sel.mouseMoveEvent(Event(140, 40))
+    sel.mouseReleaseEvent(Event(140, 40))
+    assert sel._region == (120, 20, 180, 80)
+    # 底图已移到新位置（黑带在选区左侧局部 x 0..19）
+    assert sel._region_img.getpixel((5, 25)) == (0, 0, 0)
+    # 标注仍在原局部位置（跟随内容移动）
+    assert _close(sel._region_img.getpixel((10, 25)), (245, 72, 77), 40)
+    # 撤销栈保留：Ctrl+Z 可撤销该矩形
+    assert len(sel.undo) == 1
+    sel._undo()
+    assert sel._region_img.getpixel((10, 25)) == (0, 0, 0)
+    assert len(sel.undo) == 0
 
 
 # =================================================================== #

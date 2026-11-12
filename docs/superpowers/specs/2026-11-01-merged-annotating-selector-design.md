@@ -52,7 +52,8 @@
 标注能力：
 - 复用现有 `annotation.py` 的绘制逻辑（`draw_brush`/`draw_rect`/`draw_ellipse`/`draw_arrow`/`draw_text`/`mosaic`/`UndoStack`）
 - `region_img` 在 adjust 模式开始时从 `full_img` crop 出来
-- 调整选区（拖手柄/移动）后重新 crop，清空标注和撤销栈
+- 拖手柄调整选区后重新 crop，清空标注和撤销栈
+- 移动选区（尺寸不变）后标注跟随内容保留（标注层重新定基到新位置，撤销快照同步定基）；贴边导致尺寸变化时按调整选区处理
 
 ### 方案 B：selector 阶段只换工具条内容（未选）
 

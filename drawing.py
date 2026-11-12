@@ -126,6 +126,10 @@ class UndoStack:
     def clear(self):
         self._stack.clear()
 
+    def map(self, fn):
+        """用 fn 变换每个快照（如选区移动后把快照重新定基到新位置）。"""
+        self._stack = [fn(item) for item in self._stack]
+
     def __len__(self):
         return len(self._stack)
 
@@ -219,27 +223,71 @@ def _supersample_local(img, x0, y0, x1, y1, draw_fn, scale=4):
     return img
 
 
-def draw_arrow(img, start, end, color, width):
-    """在 img 上画箭头（线条 + 三角箭头头），4x 超采样抗锯齿（原地修改）。
+# 箭头几何常量（参照参考图实测比例标定）。
+# draw_arrow 与选区预览共用，保证预览与最终渲染几何一致。
+ARROW_HALF_ANGLE = 0.48        # 头半顶角（rad ≈ 27.5°；实测 27°~30°，底宽 ≈ 0.92×头长）
+ARROW_TAPER = 0.05            # 杆向头端增宽系数：Δ = ARROW_TAPER × 箭长（实测 0.052~0.054）
+ARROW_HEAD_RATIO = 2.4        # 头长 = ARROW_HEAD_RATIO × 头端杆宽（实测 2.2~2.6）
 
-    start/end 为 (x, y) 元组，color 为颜色，width 为线宽。
+
+def arrow_geometry(start, end, width):
+    """计算箭头几何：锥形杆四边形 + 实心三角箭头。
+
+    返回 (shaft, head)，均为 (x, y) 点列表：
+    - shaft：4 点多边形，前两点为尾边（宽 = width）、后两点为头端边（更宽）。
+      杆从尾端向头端线性增宽，增宽量 Δ = max(width, ARROW_TAPER×箭长)
+      （参考图实测：尾端细、向头端逐渐变宽）。
+    - head：3 点实心三角，[尖端(=end), 底边点1, 底边点2]；
+      头长 = max(16, ARROW_HEAD_RATIO×头端杆宽)，且不超过箭长的一半量级
+      （底边不越过起点、短箭头不成"全头"）。
+    - 头端杆宽收敛到头底宽以内，线头不会穿出三角。
+    - length < 1（太短）时返回 (None, None)，由调用方画点。
     """
     x1, y1 = start
     x2, y2 = end
     length = math.hypot(x2 - x1, y2 - y1)
-    # 箭头头：尖端在 end 处、朝线条方向；底边两点在 end 后方。
-    # 头长 = max(16, 3.5x 线宽)（仿参考图的大三角头），
-    # 开口角 ±0.55 rad（~31.5°，宽而钝的实心三角）
-    head = max(16.0, 3.5 * width) if length >= 1 else 0
-    ang = math.atan2(y2 - y1, x2 - x1) if length >= 1 else 0
-    p1 = (x2 - head * math.cos(ang - 0.55), y2 - head * math.sin(ang - 0.55)) if length >= 1 else (x2, y2)
-    p2 = (x2 - head * math.cos(ang + 0.55), y2 - head * math.sin(ang + 0.55)) if length >= 1 else (x2, y2)
+    if length < 1:
+        return None, None
+    ang = math.atan2(y2 - y1, x2 - x1)
+    ux, uy = math.cos(ang), math.sin(ang)
+    vx, vy = -uy, ux  # 垂直于轴线
+    # 头长（受箭长约束）
+    head = max(16.0, ARROW_HEAD_RATIO * (width + max(width, ARROW_TAPER * length)))
+    head = min(head, 0.5 * length / math.cos(ARROW_HALF_ANGLE))
+    base = head * math.cos(ARROW_HALF_ANGLE)          # 底面到尖端的轴向距离
+    half = head * math.sin(ARROW_HALF_ANGLE)          # 底边半宽
+    ex, ey = x2 - base * ux, y2 - base * uy           # 杆端点（底面中点）
+    # 杆宽：尾端 = width，向头端增宽；极端（短线+超粗）时收敛到头底宽以内
+    w_base = width + max(width, ARROW_TAPER * length)
+    w_base = min(w_base, 2 * half)
+    w_tail = min(width, w_base)
+    shaft = [(x1 - w_tail / 2 * vx, y1 - w_tail / 2 * vy),
+             (x1 + w_tail / 2 * vx, y1 + w_tail / 2 * vy),
+             (ex + w_base / 2 * vx, ey + w_base / 2 * vy),
+             (ex - w_base / 2 * vx, ey - w_base / 2 * vy)]
+    head_pts = [(x2, y2),
+                (ex + half * vx, ey + half * vy),
+                (ex - half * vx, ey - half * vy)]
+    return shaft, head_pts
+
+
+def draw_arrow(img, start, end, color, width):
+    """在 img 上画箭头（锥形杆 + 实心三角箭头头），4x 超采样抗锯齿（原地修改）。
+
+    start/end 为 (x, y) 元组，color 为颜色，width 为线宽（杆尾端宽度）。
+    几何见 arrow_geometry：杆从尾端向头端线性增宽，线头不会穿出三角。
+    """
+    shaft, head_pts = arrow_geometry(start, end, width)
+    if shaft is None:  # 太短：画一个点
+        def draw(d, s):
+            d.line([(start[0] * s, start[1] * s), (end[0] * s, end[1] * s)],
+                   fill=color, width=max(1, int(width * s)))
+        _supersample_inplace(img, draw)
+        return img
 
     def draw(d, s):
-        d.line([(x1 * s, y1 * s), (x2 * s, y2 * s)], fill=color, width=max(1, int(width * s)))
-        if length >= 1:
-            d.polygon([(x2 * s, y2 * s), (p1[0] * s, p1[1] * s), (p2[0] * s, p2[1] * s)],
-                      fill=color)
+        d.polygon([(x * s, y * s) for x, y in shaft], fill=color)
+        d.polygon([(x * s, y * s) for x, y in head_pts], fill=color)
 
     _supersample_inplace(img, draw)
     return img

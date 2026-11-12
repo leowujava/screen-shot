@@ -30,6 +30,66 @@ def test_draw_arrow_draws_line_and_head():
     assert img.getpixel((95, 5)) == (255, 255, 255)
 
 
+def test_draw_arrow_no_line_ears_at_tip():
+    """杆只延伸到箭头头底边，尖端两侧不应有线头穿出的"耳"。
+
+    旧实现把杆画到尖端：杆宽宽于尖端附近的三角开口，线头在尖端两侧
+    各凸出一小块（如右向箭头尖端上方 1px 处出现浅红像素）。
+    """
+    img = _blank(100, 100)
+    draw_arrow(img, (10, 50), (90, 50), "#ff0000", width=3)
+    # 尖端前方 1px、轴线上方 ~1.5px：三角开口之外（允许抗锯齿渐晕）
+    for px in ((89, 48), (89, 52)):
+        assert max(abs(c - 255) for c in img.getpixel(px)) <= 12, px
+    # 三角本体仍应实心红色
+    assert _close(img.getpixel((85, 50)), (255, 0, 0), 25)
+    assert _close(img.getpixel((80, 46)), (255, 0, 0), 25)
+    assert _close(img.getpixel((80, 54)), (255, 0, 0), 25)
+
+
+def test_arrow_geometry_tapered_shaft_and_head():
+    """锥形杆四边形 + 实心三角：头端比尾端宽，头底边不越过起点，尖端 = end。"""
+    from drawing import arrow_geometry
+
+    # 常规长度（右向）：尾边宽 = 线宽，头端边更宽
+    shaft, head = arrow_geometry((0, 0), (100, 0), 3)
+    assert abs(shaft[0][1] - shaft[1][1]) == pytest.approx(3.0)   # 尾宽 = 线宽
+    assert abs(shaft[2][1] - shaft[3][1]) > 3.0                   # 头端增宽
+    assert shaft[2][0] < 100 and shaft[2][0] >= 0                 # 杆端在起点与尖端之间
+    # 三角头：尖端 = end，底边两点在尖端后方、关于轴对称
+    assert head[0] == (100, 0)
+    assert head[1][0] < 100 and head[2][0] < 100
+    assert abs(head[1][0] - head[2][0]) < 1e-9
+    assert abs(head[1][1] - head[2][1]) > 1.0
+    assert (head[1][1] < 0 < head[2][1]) or (head[2][1] < 0 < head[1][1])
+    # 杆端边不得宽于头底边（线头不穿出三角）
+    assert abs(shaft[2][1] - shaft[3][1]) <= abs(head[1][1] - head[2][1]) + 1e-9
+
+    # 极短箭头：头底边不得越过起点（杆端不反向）
+    shaft, head = arrow_geometry((0, 0), (5, 0), 3)
+    assert shaft[2][0] >= -1e-9
+    assert shaft[2][0] < head[0][0]
+
+    # 太短（length < 1）：无几何，由调用方画点
+    assert arrow_geometry((0, 0), (0.5, 0.0), 3) == (None, None)
+
+
+def test_draw_arrow_shaft_tapers_toward_head():
+    """参考图样式：杆从尾端向头端线性增宽（头端处显著更宽）。
+
+    用黑底：红色墨迹的 R 通道 > 128，背景为 0，可直接判定。
+    """
+    img = _blank(100, 40, color=(0, 0, 0))
+    draw_arrow(img, (5, 20), (95, 20), "#ff0000", width=2)
+
+    def red_span(x):
+        ys = [y for y in range(img.height) if img.getpixel((x, y))[0] > 128]
+        return max(ys) - min(ys) + 1 if ys else 0
+
+    assert red_span(45) > red_span(12)   # 杆中段比尾端宽
+    assert red_span(75) > red_span(45)   # 头端处（三角）比杆更宽
+
+
 def test_draw_rect_draws_outline():
     img = _blank()
     draw_rect(img, (10, 10, 90, 90), "#00ff00", width=2)

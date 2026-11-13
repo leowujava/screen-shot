@@ -420,6 +420,141 @@ def test_drag_frame_cost_bounded(sel_env):
     )
 
 
+def test_brush_stroke_converts_region_pixmap_only_twice(sel_env, monkeypatch):
+    """画笔 stroke：整图 PIL→QPixmap 转换只在起笔/收笔各一次，不随 mouseMove。
+
+    回归：旧实现每个 B1-Motion 都把整张选区图重转一次 QPixmap
+    （2000x1200 选区 ≈ 每帧 9MB+ 拷贝），是画笔卡顿的主要来源。
+    现在：起笔整图转换一次作底图，拖动中只转线段包围盒小 patch，
+    收笔后再整图转换一次。
+    """
+    full = Image.new("RGB", (300, 300), (255, 255, 255))
+    sel = _make(sel_env, width=300, height=300, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 290, 290)
+    sel._init_region_img()
+    sel.tool = "brush"
+    sel.color = "#000000"
+    sel.width_attr = 3
+
+    count = {"n": 0}
+    real = sel_mod._pil_to_qpixmap
+    region_size = sel._region_img.size  # 280x280
+
+    def counting(img):
+        # 只统计整图（选区尺寸）转换；stroke 中的局部 patch 小转换不计
+        if img.size == region_size:
+            count["n"] += 1
+        return real(img)
+
+    monkeypatch.setattr(sel_mod, "_pil_to_qpixmap", counting)
+
+    sel.mousePressEvent(Event(20, 20))
+    for i in range(1, 50):
+        sel.mouseMoveEvent(Event(20 + i, 20 + i))
+    sel.mouseReleaseEvent(Event(69, 69))
+    assert count["n"] == 2, (
+        f"画笔 stroke 触发 {count['n']} 次整图转换（期望 2：起笔 + 收笔），"
+        f"未实现 stroke 局部 patch 增量渲染"
+    )
+
+
+def test_brush_patch_visible_during_stroke(sel_env):
+    """画笔拖动中（move 后、release 前）渲染已可见线段（局部 patch 合成）。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = _make(sel_env, width=100, height=100, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "brush"
+    sel.color = "#000000"
+    sel.width_attr = 3
+
+    sel.mousePressEvent(Event(20, 20))
+    sel.mouseMoveEvent(Event(60, 60))
+    # stroke 进行中（未 release）：渲染必须已显示线段，不能等收笔整图转换
+    assert _close(_rgb(_render_image(sel), 40, 40), (0, 0, 0), 30), \
+        "画笔拖动中段线段未在渲染中显示"
+    sel.mouseReleaseEvent(Event(60, 60))
+    assert _close(_rgb(_render_image(sel), 40, 40), (0, 0, 0), 30)
+
+
+def test_handle_resize_does_not_convert_region_per_frame(sel_env, monkeypatch):
+    """手柄拖动缩放：期间不做整图 PIL→QPixmap 转换（底图透出）。
+
+    回归：旧实现 resize 每个 B1-Motion 都重裁 + 整图转换。
+    无标注状态选区内容必然等于定格底图 crop，直接底图透出
+    （与移动路径一致），整图转换推迟到落笔标注时。
+    """
+    full = Image.new("RGB", (300, 300), (255, 255, 255))
+    sel = _make(sel_env, width=300, height=300, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 150, 150)
+    sel._init_region_img()
+
+    count = {"n": 0}
+    real = sel_mod._pil_to_qpixmap
+
+    def counting(img):
+        count["n"] += 1
+        return real(img)
+
+    monkeypatch.setattr(sel_mod, "_pil_to_qpixmap", counting)
+
+    sel.mousePressEvent(Event(150, 150))  # se 手柄
+    for i in range(1, 30):
+        sel.mouseMoveEvent(Event(150 + i, 150 + i))
+    sel.mouseReleaseEvent(Event(179, 179))
+    assert count["n"] == 0, (
+        f"resize 拖动触发 {count['n']} 次整图转换（期望 0，定格底图透出）"
+    )
+
+
+def test_handle_resize_expanded_area_shows_base(sel_env):
+    """手柄拖大放选区后，新露出区域必须显示定格底图内容（透出路径正确）。"""
+    full = Image.new("RGB", (300, 300), (255, 255, 255))
+    ImageDraw.Draw(full).rectangle([150, 150, 299, 299], fill=(200, 30, 30))  # 右下红色块
+    sel = _make(sel_env, width=300, height=300, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 150, 150)
+    sel._init_region_img()
+
+    sel.mousePressEvent(Event(150, 150))
+    sel.mouseMoveEvent(Event(220, 220))
+    sel.mouseReleaseEvent(Event(220, 220))
+
+    # 窗口坐标 (200, 200) 在新扩出的选区内，应为底图红色块
+    assert _close(_rgb(_render_image(sel), 200, 200), (200, 30, 30), 10)
+
+
+def test_rebase_annotations_threshold_binary(sel_env):
+    """_rebase_annotations 标注层提取：任意非零差 → 全遮罩（与旧逐像素 lambda 一致）。"""
+    full = Image.new("RGB", (40, 40), (255, 255, 255))
+    sel = _make(sel_env, width=40, height=40, full_img=full)
+    old_base = Image.new("RGB", (40, 40), (255, 255, 255))
+    new_base = Image.new("RGB", (40, 40), (0, 0, 255))
+    img = Image.new("RGB", (40, 40), (255, 255, 255))
+    ImageDraw.Draw(img).rectangle([5, 5, 20, 15], fill=(255, 0, 0))  # 标注
+    out = sel._rebase_annotations(img, old_base, new_base)
+    assert out.getpixel((10, 10)) == (255, 0, 0)   # 标注区保留原标注
+    assert out.getpixel((30, 30)) == (0, 0, 255)   # 非标注区用新底图
+
+
+def test_crosshair_font_metrics_cached(sel_env):
+    """尺寸标签字体度量缓存，框选过程中不每帧重建 QFont/QFontMetrics。"""
+    sel = _make(sel_env)
+    assert sel._label_font_metrics() is sel._label_font_metrics()
+
+
+def test_tb_icon_cached(sel_env):
+    """_tb_icon 按（绘制函数, 颜色, 尺寸）缓存 QIcon，同一图标不重复渲染。"""
+    i1 = sel_mod._tb_icon(sel_mod._paint_icon_rect)
+    i2 = sel_mod._tb_icon(sel_mod._paint_icon_rect)
+    assert i1 is i2
+    i3 = sel_mod._tb_icon(sel_mod._paint_icon_rect, color="#123456")
+    assert i3 is not i1
+
+
 # =================================================================== #
 # 工具条按钮
 # =================================================================== #

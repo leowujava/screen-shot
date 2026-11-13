@@ -105,6 +105,15 @@ FULL_WINDOW_OPACITY = 1.0
 TB_ICON_SIZE = 20
 TB_ICON_SCALE = 4
 
+# 工具条图标缓存：(绘制函数, 颜色, 尺寸, 倍数) → QIcon。
+# 工具条状态切换（选中/禁用）只换缓存，不重绘（每次切换 7 个 4× 超采样图标）。
+_ICON_CACHE = {}
+
+# 标注层二值化 LUT（0 → 0，其余 → 255）。
+# .point() 传 LUT 走 C 级查表，替代逐像素 Python lambda
+# （选区移动重定基时对整张选区图执行，lambda 版百万像素级耗时）。
+_THRESHOLD_LUT = (0,) + (255,) * 255
+
 
 def _arrowhead(p, tx, ty, a_deg, size):
     """在 (tx, ty) 画指向 a_deg 方向的箭头两翼（翼向后展开 30°）。
@@ -360,9 +369,15 @@ def _tb_icon(paint_fn, color=TB_FG, target=TB_ICON_SIZE, scale=TB_ICON_SCALE):
     """矢量绘制工具条图标：高倍超采样 + devicePixelRatio，任意 DPI 下都清晰。
 
     paint_fn 签名 (painter, s, c)；color 可传颜色字符串或 QColor。
+    按 (paint_fn, color, target, scale) 缓存 QIcon，同一图标不重复渲染
+    （工具条状态切换只取缓存，见 _ICON_CACHE）。
     """
     if not isinstance(color, QColor):
         color = QColor(color)
+    key = (paint_fn, color.name(), target, scale)
+    icon = _ICON_CACHE.get(key)
+    if icon is not None:
+        return icon
     px = target * scale
     pm = QPixmap(px, px)
     pm.setDevicePixelRatio(scale)
@@ -371,7 +386,9 @@ def _tb_icon(paint_fn, color=TB_FG, target=TB_ICON_SIZE, scale=TB_ICON_SCALE):
     p.setRenderHint(QPainter.Antialiasing, True)
     paint_fn(p, target, color)
     p.end()
-    return QIcon(pm)
+    icon = QIcon(pm)
+    _ICON_CACHE[key] = icon
+    return icon
 
 
 def _virtual_screen_size():
@@ -574,6 +591,8 @@ class Selector(QWidget):
         self._masks_hidden = False
         self._base_pixmap = None
         self._region_pixmap = None
+        self._brush_patch = None  # 画笔 stroke 中的局部 patch：(QPixmap, ox, oy)，选区局部坐标
+        self._label_fm = None     # 十字准星尺寸标签 QFontMetrics（惰性缓存，避免每帧重建）
         self._tb_visible = False
         self._tb_size = None
         self._tb_row_state = 0
@@ -955,6 +974,11 @@ class Selector(QWidget):
                 p.fillRect(QRect(0, b, W, H - b), dim)
             if self._region_pixmap is not None:
                 p.drawPixmap(l, t, self._region_pixmap)
+            # 画笔 stroke 中：局部线段 patch 叠在选区底图 pixmap 上
+            #（避免每帧整图 PIL→QPixmap 转换；收笔后整图转换并清 patch）
+            if self._brush_patch is not None:
+                pm, ox, oy = self._brush_patch
+                p.drawPixmap(l + ox, t + oy, pm)
             self._paint_border(p, l, t, r, b)
             if not self._dragging_box:
                 # 画框阶段不画手柄（与旧版轻量画框路径一致），定格完成后显示
@@ -986,6 +1010,16 @@ class Selector(QWidget):
             p.setPen(pen)
             p.drawRect(QRect(hx - s, hy - s, 2 * s - 1, 2 * s - 1))
 
+    def _label_font_metrics(self):
+        """十字准星尺寸标签的 QFontMetrics（惰性缓存）。
+
+        QFontMetrics 构造涉及字体布局计算，框选过程十字准星每帧都会用，
+        缓存后避免每帧重建。
+        """
+        if self._label_fm is None:
+            self._label_fm = QFontMetrics(QFont("Microsoft YaHei UI", 9))
+        return self._label_fm
+
     def _paint_crosshair(self, p):
         x, y, w, h = self._crosshair
         W, H = self._actual_w, self._actual_h
@@ -995,8 +1029,7 @@ class Selector(QWidget):
         if w <= 0 or h <= 0:
             return
         text = f"{w} x {h}"
-        font = QFont("Microsoft YaHei UI", 9)
-        fm = QFontMetrics(font)
+        fm = self._label_font_metrics()
         tw, th = fm.horizontalAdvance(text), fm.height()
         lx, ly = x + 16, y + 16
         if lx + tw + 8 > W:
@@ -1051,7 +1084,11 @@ class Selector(QWidget):
         self.update()
 
     def _refresh_region_pixmap(self):
-        """_region_img → 选区 QPixmap（标注/选区变化后调用）。"""
+        """_region_img → 选区 QPixmap（标注/选区变化后调用）。
+
+        整图转换结果取代任何旧局部 patch（_brush_patch 置空）。
+        """
+        self._brush_patch = None
         if self._region_img is None:
             self._region_pixmap = None
             return
@@ -1060,11 +1097,43 @@ class Selector(QWidget):
         except Exception:
             self._region_pixmap = None
 
-    def _render_moved_region(self):
-        """移动选区（尺寸不变）：只移动取景框，不重裁、不重建遮罩。
+    def _refresh_brush_patch(self, p0, p1):
+        """画笔 stroke 中：只把当前线段包围盒转成小 patch QPixmap，不做整图转换。
 
-        移动期间隐藏暗化遮罩、撤下选区图（_region_pixmap=None），
-        由定格底图直接透出取景框内容，松开后重新 crop + 渲染。
+        p0/p1 为当前线段两端点（选区局部坐标）。包围盒外扩边距与 draw_brush
+        的局部超采样边距一致（max(2×笔宽, 8)），保证覆盖线段全部像素。
+        paintEvent 把 patch 合成在选区底图 pixmap 上；收笔后
+        _refresh_region_pixmap 整图转换一次并清掉 patch。
+        """
+        if self._region_img is None:
+            self._brush_patch = None
+            return
+        margin = max(2 * self.width_attr, 8)
+        x0 = min(p0[0], p1[0]) - margin
+        y0 = min(p0[1], p1[1]) - margin
+        x1 = max(p0[0], p1[0]) + margin
+        y1 = max(p0[1], p1[1]) + margin
+        W, H = self._region_img.size
+        cx0, cy0 = max(0, int(x0)), max(0, int(y0))
+        cx1, cy1 = min(W, int(x1)), min(H, int(y1))
+        if cx1 - cx0 < 1 or cy1 - cy0 < 1:
+            # 包围盒退化（极短线段）：退回整图转换，避免预览缺失
+            self._brush_patch = None
+            self._refresh_region_pixmap()
+            return
+        try:
+            pm = _pil_to_qpixmap(self._region_img.crop((cx0, cy0, cx1, cy1)))
+        except Exception:
+            pm = None
+        self._brush_patch = (pm, cx0, cy0) if pm is not None else None
+
+    def _render_moved_region(self):
+        """轻量渲染：不重裁、不重建选区 pixmap，由定格底图直接透出取景框内容。
+
+        用于两类每帧调用的拖动路径（选区内容此刻必然等于定格底图 crop）：
+        - 移动选区（尺寸不变）：移动期间另隐藏暗化遮罩（_masks_hidden）；
+        - 手柄缩放 / 贴边裁剪（_adjust_region）：undo 已清空、无标注。
+        落笔标注或收笔后会重新整图转换 _region_pixmap。
         """
         l, t, r, b = self._region
         self._region_pixmap = None
@@ -1111,8 +1180,9 @@ class Selector(QWidget):
         """
         if img.size != new_base.size:
             return img
+        # C 级 LUT 二值化（任意非零差 → 255），替代逐像素 Python lambda
         mask = ImageChops.difference(img, old_base).convert("L").point(
-            lambda v: 255 if v else 0)
+            _THRESHOLD_LUT)
         if mask.getbbox() is None:
             return new_base.copy()
         base = new_base.copy()
@@ -1135,7 +1205,10 @@ class Selector(QWidget):
             return
         self._init_region_img()
         self.undo.clear()
-        self._render_all()
+        # 缩放/贴边裁剪后 undo 已清空 → 选区内容必然等于定格底图 crop：
+        # 走底图透出的轻量渲染（与移动路径同），避免手柄拖动缩放时
+        # 每帧整图 PIL→QPixmap 转换（resize 帧开销主因）。
+        self._render_moved_region()
 
     # ------------------------------------------------------------------ #
     # 坐标 / 区域计算
@@ -1343,8 +1416,10 @@ class Selector(QWidget):
             if self.tool == "brush":
                 draw_brush(self._region_img, [self._brush_last, (rx, ry)],
                            self.color, self.width_attr)
+                # 局部 patch 增量更新：只转换线段包围盒小区域，
+                # 避免每帧整图 PIL→QPixmap 转换（画笔卡顿主热点）
+                self._refresh_brush_patch(self._brush_last, (rx, ry))
                 self._brush_last = (rx, ry)
-                self._refresh_region_pixmap()
                 self.update()
             else:
                 sx, sy = self.draw_start

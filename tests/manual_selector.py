@@ -2,7 +2,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from selector import RegionSelector
+from selector import Selector
 from capture import capture_fullscreen
 
 
@@ -13,7 +13,7 @@ def on_select(region, annotated_img):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    sel = RegionSelector(
+    sel = Selector(
         x=0, y=0, width=1920, height=1080,
         full_img=None,
         on_select=on_select,

@@ -141,3 +141,50 @@ def test_save_image_avoids_overwrite(tmp_path):
     # 无冲突时直接保存原路径
     p3 = save_image(img, str(tmp_path / "free.png"))
     assert p3 == str(tmp_path / "free.png")
+
+
+def test_save_image_concurrent_no_overwrite(tmp_path):
+    """并发保存到同一路径：各得独立文件，互不覆盖。
+
+    回归：旧实现「exists 检查 → 写入」分两步，并发时可能选中
+    同一文件名互相覆盖；现用 O_CREAT|O_EXCL 原子占名。
+    """
+    import threading
+    path = str(tmp_path / "shot.png")
+    n_workers = 8
+    barrier = threading.Barrier(n_workers)
+    results = []
+    lock = threading.Lock()
+
+    def worker(i):
+        img = Image.new("RGB", (4, 4), (i * 10, 0, 0))
+        barrier.wait()
+        p = save_image(img, path)
+        with lock:
+            results.append((i, p))
+
+    threads = [threading.Thread(target=worker, args=(i,))
+               for i in range(n_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len({p for _, p in results}) == n_workers, "并发保存出现重复路径（覆盖）"
+    for i, p in results:
+        # 内容仍是各自写入的颜色（未被其他线程覆盖）
+        assert Image.open(p).getpixel((0, 0))[0] == i * 10
+
+
+def test_save_image_failure_leaves_no_empty_file(tmp_path, monkeypatch):
+    """写入失败时清理已占位的空文件，异常照常抛出。"""
+    img = Image.new("RGB", (2, 2))
+    path = str(tmp_path / "bad.png")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(img, "save", boom)
+    with pytest.raises(OSError, match="disk full"):
+        save_image(img, path)
+    assert not os.path.exists(path)

@@ -1,4 +1,4 @@
-"""共享绘制函数（纯 PIL，无 Tk 依赖）。
+"""共享绘制函数（纯 PIL）。
 
 供 editor.py 和 selector.py 使用。
 """
@@ -144,8 +144,8 @@ class UndoStack:
 def alt_pressed(event=None):
     """事件发生时是否真正按住 Alt（用于约束正圆/正方形）。
 
-    Windows 下用 GetAsyncKeyState 查询（Tk 事件 state 在 Alt 释放后可能
-    仍带标志位，不可靠）；其余平台回退到 event.state。event 为 None 时 False。
+    Windows 下用 GetAsyncKeyState 查询实时按键状态（事件携带的修饰键
+    标志可能滞后，不可靠）；其余平台回退到 event.state。event 为 None 时 False。
     """
     if sys.platform.startswith("win"):
         try:

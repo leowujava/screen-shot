@@ -1,10 +1,10 @@
 # 运行依赖（Windows-only 项目）
-# 下限按已知可用的版本标定，避免未来大版本破坏兼容性
+# 下限按已知可用的版本标定，上限避免未来大版本破坏兼容性
 mss>=10,<11
-Pillow>=10
+Pillow>=10,<14
 pynput>=1.7,<2
-pystray>=0.19
-pywin32>=306
+pystray>=0.19,<1
+pywin32>=306,<313
 rapidocr>=3,<4
-onnxruntime>=1.17
-PySide6>=6.5
+onnxruntime>=1.17,<2
+PySide6>=6.5,<7

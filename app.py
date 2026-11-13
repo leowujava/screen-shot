@@ -24,7 +24,7 @@ _selector_holder = []
 
 
 class _GuiDispatcher(QObject):
-    """把 fn 调度到 Qt 主线程执行（替代旧 Tk root.after(0, fn)）。
+    """把 fn 调度到 Qt 主线程执行。
 
     - 主线程调用：直接执行（本应用的 GUI 调度都来自子线程，主线程直调仅
       覆盖测试等无事件循环的场景）。

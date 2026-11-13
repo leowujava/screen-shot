@@ -1,4 +1,4 @@
-﻿import ctypes
+import ctypes
 import os
 from datetime import datetime
 from PIL import Image
@@ -47,16 +47,33 @@ def default_save_path():
 
 
 def save_image(img, path=None):
-    """保存图片，返回实际保存路径。目标已存在时追加 _1、_2... 后缀防覆盖。失败抛异常。"""
+    """保存图片，返回实际保存路径。目标已存在时追加 _1、_2... 后缀防覆盖。失败抛异常。
+
+    用 O_CREAT|O_EXCL 原子地占住文件名再写入：并发保存不会因
+    「exists 检查 → 写入」之间的竞态而互相覆盖。
+    """
     path = path or default_save_path()
-    if os.path.exists(path):
-        base, ext = os.path.splitext(path)
-        n = 1
-        while os.path.exists(f"{base}_{n}{ext}"):
+    base, ext = os.path.splitext(path)
+    candidate = path
+    n = 0
+    while True:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
             n += 1
-        path = f"{base}_{n}{ext}"
-    img.save(path)
-    return path
+            candidate = f"{base}_{n}{ext}"
+            continue
+        os.close(fd)
+        try:
+            img.save(candidate)
+        except Exception:
+            # 写入失败不留空文件（best-effort 清理）
+            try:
+                os.remove(candidate)
+            except OSError:
+                pass
+            raise
+        return candidate
 
 
 def _build_dib(img):

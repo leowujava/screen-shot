@@ -26,6 +26,22 @@ def test_pil_to_qimage(qt_app):
     assert qimg.format() == QImage.Format.Format_RGBA8888
 
 
+def test_pil_to_qimage_owns_pixel_buffer(qt_app):
+    """返回的 QImage 必须拥有像素缓冲（深拷贝）。
+
+    回归：QImage 不拷贝传入的 bytes 缓冲，旧实现直接返回包装局部
+    变量的 QImage，缓冲被 GC 后读像素即悬垂内存。
+    """
+    import gc
+    from PySide6.QtGui import QColor
+    img = Image.new("RGB", (8, 6), (123, 45, 67))
+    qimg = EditorWindow._pil_to_qimage(img)
+    del img
+    gc.collect()
+    c = QColor(qimg.pixel(3, 2))
+    assert (c.red(), c.green(), c.blue()) == (123, 45, 67)
+
+
 def test_ocr_reexported_from_drawing():
     """editor 的 OCR 逻辑必须来自 drawing 的唯一实现（去重）。"""
     import editor, drawing

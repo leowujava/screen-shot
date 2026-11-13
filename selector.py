@@ -2,7 +2,10 @@
 
 合并选区 + 标注：拖拽框选 → 完整工具条 → 画完框直接标注 → 确认/复制/保存/取消。
 
-窗口模型（与旧 Tk 版一致）：
+模块拆分：配色常量见 theme.py，工具条矢量图标见 tb_icons.py，
+工具条窗口 / OCR 弹窗见 widgets.py；本文件只保留选区状态机与渲染。
+
+窗口模型：
 - overlay：无边框置顶窗口，覆盖整个虚拟桌面（所有屏幕）。
   full_img 为 None 时窗口透明度 0.5（黑底透出桌面暗化效果）；
   首次框选完成时捕获并定格整屏，之后按 1.0 不透明渲染定格截图。
@@ -17,7 +20,6 @@
 是唯一事实来源，重绘是纯函数式的，无需管理画布元素生命周期。
 """
 import ctypes
-import math
 import sys
 import threading
 
@@ -31,10 +33,8 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QGuiApplication,
-    QIcon,
     QImage,
     QPainter,
-    QPainterPath,
     QPen,
     QPixmap,
 )
@@ -47,7 +47,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSpinBox,
-    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -61,50 +60,23 @@ from drawing import (
 )
 from screenmap import build_mappings, qt_virtual_origin
 
-# 工具条配色（白底 + 蓝色高亮，仿飞书截图工具条）
-TB_BG = "#ffffff"
-TB_FG = "#1f2329"
-TB_HOVER = "#f2f3f5"        # 按钮 hover 浅灰
-TB_SEP = "#e5e6eb"
-TB_DISABLED = "#c9cdd4"     # 禁用（select 模式）
-TB_ACTIVE = "#4a90e2"       # 选中工具（蓝圈/蓝字）
-
-# 确认 / 取消 图标颜色
-TB_CONFIRM_FG = "#22c55e"
-TB_CANCEL_FG = "#f5484d"
-
-# 预设色板（仿工具条下方弹出的颜色行；第一色 = 默认画图色，截图箭头红）
-PALETTE = ["#f5484d", "#3370ff", "#86909c",
-           "#4e5969", "#ffab00", "#22c55e",
-           "#3490ff", "#1f2329", "#a0a6b0", "#ffffff"]
-
-# 尺寸标签配色
-LABEL_BG = "#2b2f36"
-LABEL_FG = "#f5f6f8"
-
-# 选区边框配色：白色外线 + 深色内线（双线）。
-# 纯白边框在白色截图背景上不可见，双线保证任意背景下至少一条线可见。
-BORDER_OUTLINE = "white"
-BORDER_INNER = "#4e5969"
-
-# 十字准星颜色
-CROSSHAIR_COLOR = "red"
-CROSSHAIR_WIDTH = 1
-
-# 暗化遮罩 alpha（0-255，128 ≈ 50%）
-MASK_ALPHA = 128
-
-# 无定格截图时的窗口透明度（与旧 Tk 版 attributes("-alpha", 0.5) 一致）
-DIM_WINDOW_OPACITY = 0.5
-FULL_WINDOW_OPACITY = 1.0
-
-# 工具条矢量图标绘制尺寸（逻辑像素）与超采样倍数
-TB_ICON_SIZE = 20
-TB_ICON_SCALE = 4
-
-# 工具条图标缓存：(绘制函数, 颜色, 尺寸, 倍数) → QIcon。
-# 工具条状态切换（选中/禁用）只换缓存，不重绘（每次切换 7 个 4× 超采样图标）。
-_ICON_CACHE = {}
+from theme import (
+    BORDER_INNER, BORDER_OUTLINE, CROSSHAIR_COLOR, CROSSHAIR_WIDTH,
+    DIM_WINDOW_OPACITY, FULL_WINDOW_OPACITY, LABEL_BG, LABEL_FG,
+    MASK_ALPHA, PALETTE, TB_ACTIVE, TB_BG, TB_CANCEL_FG, TB_CONFIRM_FG,
+    TB_DISABLED, TB_FG, TB_HOVER, TB_SEP,
+)
+# 图标与辅助窗口拆到独立模块；这里再导出全部名字，
+# 保持 `import selector` 的既有接口（测试/手动脚本直接引用）。
+from tb_icons import (
+    TB_ICON_SCALE, TB_ICON_SIZE, TOOL_ICON_FNS, _tb_icon,
+    _paint_icon_arrow, _paint_icon_brush, _paint_icon_cancel,
+    _paint_icon_color, _paint_icon_confirm, _paint_icon_copy,
+    _paint_icon_ellipse, _paint_icon_mosaic, _paint_icon_move,
+    _paint_icon_ocr, _paint_icon_rect, _paint_icon_save,
+    _paint_icon_text, _paint_icon_undo,
+)
+from widgets import _OcrResultDialog, _Toolbar
 
 # 标注层二值化 LUT（0 → 0，其余 → 255）。
 # .point() 传 LUT 走 C 级查表，替代逐像素 Python lambda
@@ -119,282 +91,6 @@ _THRESHOLD_LUT = (0,) + (255,) * 255
 _UNDO_MEMORY_BUDGET = 256 * 1024 * 1024
 _UNDO_MAXLEN = 50
 _UNDO_MINLEN = 5
-
-
-def _arrowhead(p, tx, ty, a_deg, size):
-    """在 (tx, ty) 画指向 a_deg 方向的箭头两翼（翼向后展开 30°）。
-
-    角度为屏幕坐标系（y 向下）：0°=右、90°=下、-90°=上、180°=左。
-    """
-    a = math.radians(a_deg)
-    for da in (a + math.radians(150), a - math.radians(150)):
-        p.drawLine(QPointF(tx, ty),
-                   QPointF(tx + size * math.cos(da),
-                           ty + size * math.sin(da)))
-
-
-# --------------------------------------------------------------------------- #
-# 各图标绘制函数：统一签名 (painter, s, c)，s=逻辑边长，c=线稿颜色（QColor）。
-# 全部为单色线稿（圆头圆角），16% 安全边距，任意 DPI 下清晰、风格一致。
-# --------------------------------------------------------------------------- #
-
-def _paint_icon_move(p, s, c):
-    """移动选区：四向箭头。"""
-    pen = QPen(c, max(1.4, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    cx = cy = s * 0.5
-    m = s * 0.18
-    p.drawLine(QPointF(cx, m), QPointF(cx, s - m))
-    p.drawLine(QPointF(m, cy), QPointF(s - m, cy))
-    hz = s * 0.17
-    _arrowhead(p, cx, m, -90, hz)    # 上
-    _arrowhead(p, cx, s - m, 90, hz)    # 下
-    _arrowhead(p, m, cy, 180, hz)    # 左
-    _arrowhead(p, s - m, cy, 0, hz)   # 右
-
-
-def _paint_icon_brush(p, s, c):
-    """画笔：45° 铅笔 + 左下波浪线（钢笔带笔迹，参考设计样式）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    # 铅笔杆
-    p.drawLine(QPointF(s * 0.44, s * 0.56), QPointF(s * 0.68, s * 0.32))
-    # 笔尖（绘图端小实心三角）
-    p.setPen(Qt.NoPen)
-    p.setBrush(c)
-    p.drawPolygon([QPointF(s * 0.34, s * 0.66),
-                   QPointF(s * 0.45, s * 0.61),
-                   QPointF(s * 0.39, s * 0.55)])
-    # 笔尾箍（尾端短斜杠）
-    pen2 = QPen(c, max(1.2, s * 0.06))
-    pen2.setCapStyle(Qt.RoundCap)
-    p.setPen(pen2)
-    p.drawLine(QPointF(s * 0.62, s * 0.27), QPointF(s * 0.73, s * 0.38))
-    # 波浪线（笔迹，三次贝塞尔 S 形）
-    path = QPainterPath(QPointF(s * 0.24, s * 0.76))
-    path.cubicTo(QPointF(s * 0.32, s * 0.66), QPointF(s * 0.42, s * 0.84),
-                 QPointF(s * 0.54, s * 0.72))
-    squig = QPen(c, max(1.3, s * 0.065))
-    squig.setCapStyle(Qt.RoundCap)
-    p.setPen(squig)
-    p.drawPath(path)
-
-
-def _paint_icon_rect(p, s, c):
-    """矩形：圆角正方形（参考设计为方而非扁矩形）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawRoundedRect(QRectF(s * 0.22, s * 0.22, s * 0.56, s * 0.56),
-                      s * 0.06, s * 0.06)
-
-
-def _paint_icon_ellipse(p, s, c):
-    """圆形：正圆（参考设计为圆而非扁椭圆）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawEllipse(QRectF(s * 0.22, s * 0.22, s * 0.56, s * 0.56))
-
-
-def _paint_icon_arrow(p, s, c):
-    """箭头：斜线杆 + 尖端直角开口箭头（Lucide arrow-up-right 风格）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    # 斜向线杆
-    p.drawLine(QPointF(s * 0.28, s * 0.72), QPointF(s * 0.64, s * 0.36))
-    # 箭头两翼：水平 + 垂直，在尖端成直角开口
-    p.drawLine(QPointF(s * 0.44, s * 0.28), QPointF(s * 0.72, s * 0.28))
-    p.drawLine(QPointF(s * 0.72, s * 0.28), QPointF(s * 0.72, s * 0.56))
-
-
-def _paint_icon_mosaic(p, s, c):
-    """打码：圆角方框 + X 形 5 格填充（四角 + 中心，参考设计样式）。"""
-    pen = QPen(c, max(1.4, s * 0.07))
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawRoundedRect(QRectF(s * 0.20, s * 0.20, s * 0.60, s * 0.60),
-                      s * 0.06, s * 0.06)
-    p.setPen(Qt.NoPen)
-    p.setBrush(c)
-    for cy, cx in ((0.30, 0.30), (0.30, 0.70), (0.50, 0.50),
-                   (0.70, 0.30), (0.70, 0.70)):
-        half = s * 0.055
-        p.drawRect(QRectF(s * cx - half, s * cy - half, 2 * half, 2 * half))
-
-
-def _paint_icon_text(p, s, c):
-    """文字：衬线 T（Lucide type 风格：顶横 + 两侧衬线 + 底部衬线）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    p.drawLine(QPointF(s * 0.26, s * 0.28), QPointF(s * 0.74, s * 0.28))  # 顶横
-    p.drawLine(QPointF(s * 0.26, s * 0.28), QPointF(s * 0.26, s * 0.38))  # 左衬线
-    p.drawLine(QPointF(s * 0.74, s * 0.28), QPointF(s * 0.74, s * 0.38))  # 右衬线
-    p.drawLine(QPointF(s * 0.50, s * 0.28), QPointF(s * 0.50, s * 0.72))  # 竖杆
-    p.drawLine(QPointF(s * 0.38, s * 0.72), QPointF(s * 0.62, s * 0.72))  # 底衬线
-
-
-def _arc_pts(cx, cy, r, a0, a1, steps=48):
-    """圆弧折线点序列（屏幕坐标，y 向下；a0→a1 按角度增减方向绘制）。"""
-    pts = []
-    for i in range(steps + 1):
-        a = math.radians(a0 + (a1 - a0) * i / steps)
-        pts.append(QPointF(cx + r * math.cos(a), cy + r * math.sin(a)))
-    return pts
-
-
-def _paint_icon_undo(p, s, c):
-    """撤销：钩状回转箭头（左指箭头 + C 形钩，参考设计 ↩ 样式）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    # 左指箭头（尖端在左上）
-    _arrowhead(p, s * 0.26, s * 0.38, 180, s * 0.14)
-    # 箭杆 + 钩形弧（从顶部起顺时针 240°，末端朝左下）
-    p.drawLine(QPointF(s * 0.30, s * 0.38), QPointF(s * 0.52, s * 0.38))
-    p.drawPolyline(_arc_pts(s * 0.52, s * 0.54, s * 0.16, 270, 510))
-
-
-def _paint_icon_copy(p, s, c):
-    """复制：两个叠放的圆角方形。"""
-    pen = QPen(c, max(1.4, s * 0.07))
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    # 后方方形
-    p.setBrush(Qt.NoBrush)
-    p.drawRoundedRect(QRectF(s * 0.34, s * 0.20, s * 0.44, s * 0.44),
-                      s * 0.05, s * 0.05)
-    # 前方方形（底色遮盖 + 描边）
-    p.setBrush(QColor(TB_BG))
-    p.drawRoundedRect(QRectF(s * 0.22, s * 0.36, s * 0.44, s * 0.44),
-                      s * 0.05, s * 0.05)
-
-
-def _paint_icon_ocr(p, s, c):
-    """识别文字：扫描文本样式（四个 L 形角框 + 中央 3 条文本行，参考设计样式）。"""
-    pen = QPen(c, max(1.4, s * 0.07))
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    # 四角框（L 形）
-    p.drawPolyline([QPointF(s * 0.24, s * 0.40), QPointF(s * 0.24, s * 0.24),
-                    QPointF(s * 0.40, s * 0.24)])
-    p.drawPolyline([QPointF(s * 0.60, s * 0.24), QPointF(s * 0.76, s * 0.24),
-                    QPointF(s * 0.76, s * 0.40)])
-    p.drawPolyline([QPointF(s * 0.76, s * 0.60), QPointF(s * 0.76, s * 0.76),
-                    QPointF(s * 0.60, s * 0.76)])
-    p.drawPolyline([QPointF(s * 0.40, s * 0.76), QPointF(s * 0.24, s * 0.76),
-                    QPointF(s * 0.24, s * 0.60)])
-    # 中央文本行（两长一短）
-    p.drawLine(QPointF(s * 0.36, s * 0.40), QPointF(s * 0.64, s * 0.40))
-    p.drawLine(QPointF(s * 0.36, s * 0.50), QPointF(s * 0.64, s * 0.50))
-    p.drawLine(QPointF(s * 0.36, s * 0.60), QPointF(s * 0.54, s * 0.60))
-
-
-def _paint_icon_color(p, s, c):
-    """选择颜色：调色板主体 + 拇指孔 + 取自真实预设色板的前 3 色色点。"""
-    # 调色板主体（浅灰底 + 线稿色描边）
-    p.setPen(QPen(c, max(1.2, s * 0.055)))
-    p.setBrush(QColor(TB_HOVER))
-    p.drawEllipse(QRectF(s * 0.09, s * 0.14, s * 0.82, s * 0.68))
-    # 拇指孔
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(TB_BG))
-    p.drawEllipse(QPointF(s * 0.62, s * 0.56), s * 0.115, s * 0.115)
-    # 色点（与预设色板前 3 色一致，不随状态变色）
-    dot_r = s * 0.088
-    for (dx, dy), col in zip(
-        ((s * 0.30, s * 0.36), (s * 0.50, s * 0.27), (s * 0.70, s * 0.36)),
-        (QColor(pc) for pc in PALETTE[:3]),
-    ):
-        p.setBrush(col)
-        p.drawEllipse(QPointF(dx, dy), dot_r, dot_r)
-
-
-def _paint_icon_save(p, s, c):
-    """保存：下载样式（向下箭头 + 底部托盘，参考设计样式，替代软盘）。"""
-    pen = QPen(c, max(1.5, s * 0.08))
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    # 垂直箭杆 + 向下箭头
-    p.drawLine(QPointF(s * 0.50, s * 0.18), QPointF(s * 0.50, s * 0.52))
-    _arrowhead(p, s * 0.50, s * 0.62, 90, s * 0.13)
-    # 底部托盘（U 形，开口向上）
-    p.drawPolyline([QPointF(s * 0.30, s * 0.66), QPointF(s * 0.30, s * 0.78),
-                    QPointF(s * 0.70, s * 0.78), QPointF(s * 0.70, s * 0.66)])
-
-
-def _paint_icon_confirm(p, s, c):
-    """确认：对勾（细线条，参考设计样式）。"""
-    pen = QPen(c, max(1.6, s * 0.09))
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.drawPolyline([QPointF(s * 0.28, s * 0.52),
-                    QPointF(s * 0.42, s * 0.66),
-                    QPointF(s * 0.72, s * 0.32)])
-
-
-def _paint_icon_cancel(p, s, c):
-    """取消：叉号（细线条，参考设计样式）。"""
-    pen = QPen(c, max(1.6, s * 0.09))
-    pen.setCapStyle(Qt.RoundCap)
-    p.setPen(pen)
-    p.drawLine(QPointF(s * 0.32, s * 0.32), QPointF(s * 0.68, s * 0.68))
-    p.drawLine(QPointF(s * 0.68, s * 0.32), QPointF(s * 0.32, s * 0.68))
-
-
-# 标注工具 → 图标绘制函数（与 Selector.TOOLS 一一对应）
-TOOL_ICON_FNS = {
-    "move": _paint_icon_move,
-    "brush": _paint_icon_brush,
-    "rect": _paint_icon_rect,
-    "ellipse": _paint_icon_ellipse,
-    "arrow": _paint_icon_arrow,
-    "mosaic": _paint_icon_mosaic,
-    "text": _paint_icon_text,
-}
-
-
-def _tb_icon(paint_fn, color=TB_FG, target=TB_ICON_SIZE, scale=TB_ICON_SCALE):
-    """矢量绘制工具条图标：高倍超采样 + devicePixelRatio，任意 DPI 下都清晰。
-
-    paint_fn 签名 (painter, s, c)；color 可传颜色字符串或 QColor。
-    按 (paint_fn, color, target, scale) 缓存 QIcon，同一图标不重复渲染
-    （工具条状态切换只取缓存，见 _ICON_CACHE）。
-    """
-    if not isinstance(color, QColor):
-        color = QColor(color)
-    key = (paint_fn, color.name(), target, scale)
-    icon = _ICON_CACHE.get(key)
-    if icon is not None:
-        return icon
-    px = target * scale
-    pm = QPixmap(px, px)
-    pm.setDevicePixelRatio(scale)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    paint_fn(p, target, color)
-    p.end()
-    icon = QIcon(pm)
-    _ICON_CACHE[key] = icon
-    return icon
 
 
 def _virtual_screen_size():
@@ -431,6 +127,8 @@ def _pil_to_qpixmap(img):
     if img.mode != "RGB":
         img = img.convert("RGB")
     data = img.tobytes("raw", "BGRX")
+    # QImage 不拷贝 data 缓冲，但 fromImage 立即深拷贝为 QPixmap，
+    # 返回时像素已归 Qt 所有——不要改成返回 QImage（会悬垂）。
     return QPixmap.fromImage(QImage(data, img.width, img.height,
                                     QImage.Format_RGB32))
 
@@ -450,88 +148,6 @@ def _event_pos(event):
     return int(event.x), int(event.y)
 
 
-class _Toolbar(QWidget):
-    """选区工具条：独立置顶无边框窗口。
-
-    键盘（Esc / Enter / Ctrl+Z）与 overlay 保持一致；
-    closeEvent 被忽略，工具条的显示/隐藏完全由 Selector 管理。
-    """
-
-    def __init__(self, selector):
-        super().__init__()
-        self._selector = selector
-
-    def keyPressEvent(self, e):
-        sel = self._selector
-        if sel is None:  # selector 已清理：按键直接忽略，避免事件晚到时崩溃
-            return
-        k = e.key()
-        if k == Qt.Key_Escape:
-            sel._cancel()
-        elif k in (Qt.Key_Return, Qt.Key_Enter):
-            sel._confirm()
-        elif k == Qt.Key_Z and (e.modifiers() & Qt.ControlModifier):
-            sel._undo()
-        else:
-            super().keyPressEvent(e)
-
-    def closeEvent(self, e):
-        e.ignore()
-
-
-class _OcrResultDialog(QDialog):
-    """OCR 结果弹窗：只读文本可选中，支持复制全部 / 复制选中 / Ctrl+C。"""
-
-    def __init__(self, text, parent):
-        super().__init__(parent)
-        self.setWindowTitle("识别文字")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.resize(520, 360)
-
-        layout = QVBoxLayout(self)
-        self.text_edit = QTextEdit(self)
-        self.text_edit.setReadOnly(True)
-        self.text_edit.setLineWrapMode(QTextEdit.WidgetWidth)
-        self.text_edit.setText(text)
-        layout.addWidget(self.text_edit)
-
-        bar = QHBoxLayout()
-
-        def copy_selected():
-            sel = self.text_edit.selectedText()
-            if sel:
-                from capture import copy_text_to_clipboard
-                if copy_text_to_clipboard(sel):
-                    self.accept()
-
-        def copy_all():
-            from capture import copy_text_to_clipboard
-            if copy_text_to_clipboard(text):
-                self.accept()
-
-        btn_sel = QPushButton("复制选中")
-        btn_sel.clicked.connect(copy_selected)
-        btn_all = QPushButton("复制全部")
-        btn_all.clicked.connect(copy_all)
-        btn_close = QPushButton("关闭")
-        btn_close.clicked.connect(self.reject)
-        bar.addStretch(1)
-        bar.addWidget(btn_sel)
-        bar.addWidget(btn_all)
-        bar.addWidget(btn_close)
-        layout.addLayout(bar)
-
-    def keyPressEvent(self, e):
-        # Ctrl+C 复制选中（capture.copy_text_to_clipboard，与剪贴板行为一致）
-        if e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
-            sel = self.text_edit.selectedText()
-            if sel:
-                from capture import copy_text_to_clipboard
-                copy_text_to_clipboard(sel)
-            return
-        super().keyPressEvent(e)
-
-
 class Selector(QWidget):
     """合并选区 + 标注：拖拽框选 → 完整工具条 → 画完框直接标注 → 确认/复制/保存/取消。
 
@@ -548,8 +164,6 @@ class Selector(QWidget):
       annotated_img = PIL Image（选区 crop + 标注）
     on_copy: 复制回调，签名同 on_select
     on_save: 保存回调，签名同 on_select
-    root: 兼容旧 Tk 版签名（共享根窗口）；PySide6 版忽略该参数，
-          窗口统一由 Qt 事件循环驱动，show() 始终非阻塞。
     capture_screen: 可选的整屏截图函数（无参，返回 PIL Image），
                     full_img 为 None 时框选完成后调用。
     """
@@ -576,7 +190,7 @@ class Selector(QWidget):
     # 标注工具（取色已集成到颜色面板，不在主工具条）。
     # 顺序对齐参考设计：move 之后 矩形→圆→箭头→画笔→文字→马赛克。
     TOOLS = ("move", "rect", "ellipse", "arrow", "brush", "text", "mosaic")
-    # 图标为矢量绘制（见模块级 TOOL_ICON_FNS / _tb_icon），不用文本/emoji
+    # 图标为矢量绘制（见 tb_icons.TOOL_ICON_FNS / _tb_icon），不用文本/emoji
     TOOL_LABELS = {"move": "移动选区", "brush": "画笔", "rect": "矩形", "ellipse": "圆形",
                    "arrow": "箭头", "mosaic": "打码", "text": "文字"}
 
@@ -585,7 +199,7 @@ class Selector(QWidget):
     _ocr_failed = Signal(str)
 
     def __init__(self, x, y, width, height, full_img, on_select,
-                 on_copy, on_save, root=None, capture_screen=None):
+                 on_copy, on_save, capture_screen=None):
         super().__init__()
         # 注意：不能叫 self.x/y/width/height——会覆盖 QWidget 同名方法
         self.origin_x = x
@@ -2081,7 +1695,3 @@ class Selector(QWidget):
         self._brush_patch = None
         self._brush_bbox = None
         self.undo.clear()
-
-
-# 向后兼容别名
-RegionSelector = Selector

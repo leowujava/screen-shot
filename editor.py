@@ -65,7 +65,10 @@ class EditorWindow(QMainWindow):
         if img.mode != "RGBA":
             img = img.convert("RGBA")
         data = img.tobytes("raw", "RGBA")
-        return QImage(data, img.width, img.height, QImage.Format_RGBA8888)
+        # QImage 不拷贝传入缓冲：必须 copy() 深拷贝后再返回，
+        # 否则 data 被 GC 后 QImage 指向已释放内存（悬垂缓冲）。
+        return QImage(data, img.width, img.height,
+                      QImage.Format_RGBA8888).copy()
 
     def save_image(self):
         path, _ = QFileDialog.getSaveFileName(

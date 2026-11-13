@@ -60,10 +60,6 @@ from drawing import (
     alt_pressed,
 )
 
-# 选区完成回调常量（保留向后兼容）
-SELECT_DONE = "done"      # 用户确认选区（Enter / 双击 / 工具条确认）
-SELECT_CANCEL = "cancel"  # 用户取消（Esc / 右键 / 工具条取消）
-
 # 工具条配色（白底 + 蓝色高亮，仿飞书截图工具条）
 TB_BG = "#ffffff"
 TB_FG = "#1f2329"
@@ -113,6 +109,15 @@ _ICON_CACHE = {}
 # .point() 传 LUT 走 C 级查表，替代逐像素 Python lambda
 # （选区移动重定基时对整张选区图执行，lambda 版百万像素级耗时）。
 _THRESHOLD_LUT = (0,) + (255,) * 255
+
+# 撤销快照内存预算：每份快照 ≈ 选区宽 × 高 × 3 字节（RGB），
+# 快照总数按选区尺寸动态计算（见 Selector._undo_maxlen_for）。
+# 固定 50 份对小选区足够"撤销回干净底图"，但 4K 选区（≈24.9MB/份）
+# 50 份会逼近 1.3GB；按预算折算后 4K ≈ 10 份、1080p ≈ 43 份，
+# 撤销内存始终有界，小选区体验不变。
+_UNDO_MEMORY_BUDGET = 256 * 1024 * 1024
+_UNDO_MAXLEN = 50
+_UNDO_MINLEN = 5
 
 
 def _arrowhead(p, tx, ty, a_deg, size):
@@ -414,12 +419,19 @@ def _virtual_screen_size():
 
 
 def _pil_to_qpixmap(img):
-    """PIL Image → QPixmap（不拷贝 img，转换一次缓存使用）。"""
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
-    data = img.tobytes("raw", "RGBA")
+    """PIL Image → QPixmap（不拷贝 img，转换一次缓存使用）。
+
+    不透明图（定格截图/选区图均为 RGB）直接输出 BGRX 字节串 +
+    Format_RGB32：省去一次整图 convert("RGBA") 拷贝 + 一次整图通道
+    转换（约 选区尺寸 × 4 字节），标注/撤销/换色/画笔整图补齐等
+    路径的每次转换都更便宜。Format_RGB32 为 Windows 原生格式，
+    上传不做字节交换，且 Qt 按不透明处理，与旧 RGBA8888 渲染一致。
+    """
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    data = img.tobytes("raw", "BGRX")
     return QPixmap.fromImage(QImage(data, img.width, img.height,
-                                    QImage.Format_RGBA8888))
+                                    QImage.Format_RGB32))
 
 
 def _event_pos(event):
@@ -617,8 +629,9 @@ class Selector(QWidget):
         self.width_attr = 3
         # 撤销深度上限：每笔标注都保存一份选区图副本。上限过低（如 10）时，
         # 画满上限后最旧快照被挤出，撤销到栈空也回不到干净底图（"撤销没干净"）。
-        # 50 笔足以覆盖正常标注量，且内存可控（每份 ≈ 选区尺寸 × 3 字节）。
-        self.undo = UndoStack(maxlen=50)
+        # 初始 50 笔；选区 crop 后按尺寸动态调整（_init_region_img →
+        # _undo_maxlen_for），大选区自动降份数，总快照内存不超过 _UNDO_MEMORY_BUDGET。
+        self.undo = UndoStack(maxlen=_UNDO_MAXLEN)
         self.drawing = False
         self.draw_start = None
         self.start = None  # 框选起点（select→adjust 过渡阶段）
@@ -1184,11 +1197,19 @@ class Selector(QWidget):
     # ------------------------------------------------------------------ #
 
     def _init_region_img(self):
-        """从 full_img crop 出 region_img。"""
+        """从 full_img crop 出 region_img，并按选区尺寸调整撤销快照上限。"""
         if self.full_img is None:
             return
         l, t, r, b = self._region
         self._region_img = self.full_img.crop((l, t, r, b))
+        self.undo.maxlen = self._undo_maxlen_for(
+            self._region_img.width, self._region_img.height)
+
+    @staticmethod
+    def _undo_maxlen_for(w, h):
+        """撤销快照份数上限：min(_UNDO_MAXLEN, 预算 // 单份字节数)，下限 _UNDO_MINLEN。"""
+        per = max(1, w * h * 3)
+        return max(_UNDO_MINLEN, min(_UNDO_MAXLEN, _UNDO_MEMORY_BUDGET // per))
 
     def _rebase_annotations(self, img, old_base, new_base):
         """选区移动（尺寸不变）：把 img 的标注层重新定基到新位置。
@@ -1246,6 +1267,16 @@ class Selector(QWidget):
         if w < self.MIN_SIZE or h < self.MIN_SIZE:
             return None
         return (left, top, w, h)
+
+    @staticmethod
+    def _is_tiny_region(region):
+        """region 是否仍是按下时的 1x1 占位框（纯点击、未拖出真实选区）。
+
+        框选过渡中 mouseMoveEvent 只在实际宽或高 ≥ MIN_SIZE 时才更新选区，
+        因此选区仍 ≤1px 即代表用户只是点了一下。
+        """
+        l, t, r, b = region
+        return (r - l) <= 1 and (b - t) <= 1
 
     def _to_virtual_region(self):
         """当前选区 → mss 虚拟桌面坐标 (left, top, width, height)；无选区返回 None。"""
@@ -1482,8 +1513,14 @@ class Selector(QWidget):
         # 画框结束：切换到完整渲染（定格 + 重裁选区图）
         if self._dragging_box:
             self._dragging_box = False
-            if self._region is None:
+            if self._region is None or self._is_tiny_region(self._region):
+                # 纯点击（未拖出 ≥ MIN_SIZE 的框，选区仍是按下时的 1x1 占位框）：
+                # 回到 select 模式且不定格——一次点击不应触发 hide→截屏→show
+                # 的整屏捕获与闪烁，也不应留下 1x1 选区（与 MIN_SIZE 语义一致）。
+                self._region = None
                 self._mode = "select"
+                self._set_toolbar_enabled(False)
+                self._tb_hide()
                 self._render_all()
                 self.update()
                 return
@@ -1498,7 +1535,11 @@ class Selector(QWidget):
             self.update()
             return
         if self._region is None:
+            # 手柄拖到选区 < MIN_SIZE（_normalize 置空）后落笔：回到 select 模式，
+            # 收起工具条（此前工具条会残留悬浮在 select 模式的画面上）。
             self._mode = "select"
+            self._set_toolbar_enabled(False)
+            self._tb_hide()
             self._render_all()
             self.update()
             return

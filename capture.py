@@ -116,11 +116,12 @@ def copy_to_clipboard(img):
 def copy_text_to_clipboard(text):
     """把文本复制到系统剪贴板（CF_UNICODETEXT）。成功返回 True，失败返回 False。"""
     import win32clipboard
+    import win32con
     try:
         win32clipboard.OpenClipboard()
         try:
             win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(13, text)  # CF_UNICODETEXT
+            win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
         finally:
             win32clipboard.CloseClipboard()
         return True

@@ -65,9 +65,30 @@ def _run_on_main(fn):
     d.schedule(fn)
 
 
+def _report_error(title, exc):
+    """记录错误并在主线程弹出提示（不静默吞掉；调用方在哪个线程都能安全用）。"""
+    import traceback
+    traceback.print_exc()
+
+    def _show_error():
+        try:
+            QMessageBox.critical(None, title, str(exc))
+        except Exception:
+            pass
+
+    _run_on_main(_show_error)
+
+
 def process_fullscreen_capture(img):
-    """全屏截图 → 保存并复制到剪贴板，返回路径。"""
-    path = save_image(img, None)
+    """全屏截图 → 保存并复制到剪贴板，返回保存路径（保存失败时为 None）。
+
+    保存失败只弹提示、不阻断后续剪贴板复制（用户仍可 Ctrl+V 粘贴），不静默吞掉。
+    """
+    path = None
+    try:
+        path = save_image(img, None)
+    except Exception as e:
+        _report_error("保存失败", e)
     _safe_copy_to_clipboard(img)
     return path
 
@@ -77,16 +98,15 @@ def _safe_copy_to_clipboard(img):
     try:
         copy_to_clipboard(img)
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        _report_error("复制失败", e)
 
-        def _show_error():
-            try:
-                QMessageBox.critical(None, "复制失败", str(e))
-            except Exception:
-                pass
 
-        _run_on_main(_show_error)
+def _safe_save(img):
+    """保存截图到桌面；失败时弹出提示而不是崩溃或静默吞掉。"""
+    try:
+        save_image(img, None)
+    except Exception as e:
+        _report_error("保存失败", e)
 
 
 def process_region_selection(region, annotated_img):
@@ -116,10 +136,19 @@ def _on_copy(region, annotated_img):
 
 
 def _on_save(region, annotated_img):
-    """选区"保存"回调：region 为 None（取消）时不做任何事。"""
+    """选区"保存"回调：region 为 None（取消）时不做任何事。
+
+    PNG 编码是 CPU 密集操作：放到工作线程执行，避免大选区（数秒级）
+    卡住主线程事件循环；失败弹提示（_safe_save），不再让异常沿
+    _exit → _finish 传播到 Qt 事件循环导致整个应用崩溃。
+    """
     if region is None:
         return
-    save_image(annotated_img, None)
+
+    def worker():
+        _safe_save(annotated_img)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def _has_active_selector():

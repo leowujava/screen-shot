@@ -93,3 +93,52 @@ def test_selector_copy_save_callbacks_ignore_cancel():
         mock_copy.assert_not_called()
         mock_save.assert_not_called()
 
+
+def test_on_save_runs_in_worker_thread():
+    """选区保存：PNG 编码在工作线程执行（不卡主线程事件循环）。"""
+    import app
+
+    done = threading.Event()
+    info = {}
+
+    def fake(img, path=None):
+        info["t"] = threading.get_ident()
+        done.set()
+        return "C:\\shot.png"
+
+    with patch.object(app, "save_image", fake):
+        main_id = threading.get_ident()
+        app._on_save((0, 0, 10, 10), Image.new("RGB", (10, 10)))
+        assert done.wait(5)
+    assert info["t"] != main_id, "save_image 不应在主线程执行"
+
+
+def test_on_save_reports_failure_without_raising():
+    """选区保存失败：弹提示而非抛异常（异常不再沿 _exit→_finish 传播到
+    Qt 事件循环导致整个应用崩溃）。"""
+    import app
+
+    shown = threading.Event()
+    mock_err = MagicMock(side_effect=lambda *a, **k: shown.set())
+    with patch.object(app, "save_image", side_effect=OSError("disk full")), \
+         patch.object(app.QMessageBox, "critical", mock_err):
+        app._on_save((0, 0, 10, 10), Image.new("RGB", (10, 10)))
+        assert shown.wait(5)
+    mock_err.assert_called_once()
+
+
+def test_process_fullscreen_capture_save_failure_still_copies():
+    """全屏保存失败：弹提示但仍复制到剪贴板（不阻断粘贴），返回 None。"""
+    import app
+
+    img = Image.new("RGB", (10, 10))
+    shown = threading.Event()
+    mock_err = MagicMock(side_effect=lambda *a, **k: shown.set())
+    with patch.object(app, "save_image", side_effect=OSError("disk full")), \
+         patch.object(app, "copy_to_clipboard") as cc, \
+         patch.object(app.QMessageBox, "critical", mock_err):
+        path = app.process_fullscreen_capture(img)
+    assert path is None
+    cc.assert_called_once_with(img)
+    mock_err.assert_called_once()
+

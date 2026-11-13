@@ -187,6 +187,43 @@ def test_selector_captures_screen_after_initial_selection(sel_env):
     ff.assert_called()
 
 
+def test_click_without_drag_returns_to_select_mode(sel_env):
+    """纯点击（按下后未拖动）回到 select 模式：不定格（不截屏）、不留 1x1 选区、收起工具条。
+
+    回归：旧实现一次点击就产生 1x1 选区并触发 hide→截屏→show 的整屏捕获与闪烁。
+    """
+    full = Image.new("RGB", (200, 200), (255, 255, 255))
+    capture_screen = MagicMock(return_value=full)
+    sel = _make(sel_env, full_img=None, capture_screen=capture_screen)
+
+    sel.mousePressEvent(Event(50, 50))
+    assert sel._mode == "adjust"      # 按下即进 adjust（1x1 占位选区）
+    assert sel._tb_visible            # 工具条已随 adjust 显示
+    sel.mouseReleaseEvent(Event(50, 50))
+
+    # 回到 select：无选区、未定格截屏、工具条收起且禁用
+    assert sel._mode == "select"
+    assert sel._region is None
+    capture_screen.assert_not_called()
+    assert sel.full_img is None
+    assert not sel._tb_visible
+    assert all(not b.isEnabled() for b in sel._tool_btns.values())
+
+    # 点击后可立即开始下一次框选
+    sel.mousePressEvent(Event(20, 20))
+    sel.mouseMoveEvent(Event(80, 80))
+    assert sel._region == (20, 20, 80, 80)
+
+
+def test_pil_to_qpixmap_preserves_rgb_channels(sel_env):
+    """_pil_to_qpixmap 通道顺序正确（回归：BGRX 字节串 + Format_RGB32 的映射）。"""
+    img = Image.new("RGB", (4, 4), (245, 72, 77))  # 红
+    pm = sel_mod._pil_to_qpixmap(img)
+    assert (pm.width(), pm.height()) == (4, 4)
+    c = pm.toImage().pixelColor(2, 2)
+    assert (c.red(), c.green(), c.blue()) == (245, 72, 77)
+
+
 def test_selection_defaults_to_move_tool_and_can_be_dragged(sel_env):
     full = Image.new("RGB", (200, 200), (255, 255, 255))
     sel = _make(sel_env, full_img=full)
@@ -861,6 +898,34 @@ def test_undo_fully_reverts_many_strokes(sel_env):
     assert sel._region_img.tobytes() == clean.tobytes()
 
 
+def test_undo_maxlen_scales_with_region_size(sel_env):
+    """撤销快照份数按内存预算折算：大选区自动降份数，小选区不受影响。
+
+    回归：固定 50 份对 4K 选区（≈24.9MB/份）会逼近 1.3GB；
+    现在上限 = min(50, 预算 // 单份字节数)，总撤销内存有界。
+    """
+    from selector import _UNDO_MEMORY_BUDGET, _UNDO_MAXLEN
+
+    # 小选区：上限保持 50（撤销能回干净底图）
+    assert Selector._undo_maxlen_for(80, 80) == _UNDO_MAXLEN
+    # 4K 选区：按预算折算（≈10），显著小于 50
+    k4 = Selector._undo_maxlen_for(3840, 2160)
+    assert k4 == _UNDO_MEMORY_BUDGET // (3840 * 2160 * 3)
+    assert k4 < 15
+
+    # 端到端：4K 选区 crop 后撤销上限随之调整，超出被挤出
+    full = Image.new("RGB", (3840, 2160), (255, 255, 255))
+    sel = _make(sel_env, width=3840, height=2160, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 3840, 2160)
+    sel._init_region_img()
+    assert sel.undo.maxlen == k4
+    for _ in range(k4 + 2):
+        sel.undo.push(sel._region_img.copy())
+    assert len(sel.undo) == k4
+    del full
+
+
 def test_mosaic_annotation(sel_env):
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     d = ImageDraw.Draw(full)
@@ -1151,6 +1216,31 @@ def test_adjust_region_direct_none_no_crash(sel_env):
     sel._region = None
     # 不应抛 TypeError
     sel._adjust_region()
+
+
+def test_shrink_to_nothing_hides_toolbar(sel_env):
+    """手柄拖到选区 < MIN_SIZE（选区变空）后松手：回到 select 模式并收起工具条。
+
+    回归：旧实现该路径不收工具条，工具条会残留悬浮在 select 模式的画面上。
+    """
+    full = Image.new("RGB", (600, 400), (255, 255, 255))
+    sel = _make(sel_env, width=600, height=400, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (200, 150, 450, 300)
+    sel._init_region_img()
+    sel._render_all()
+    assert sel._tb_visible
+
+    # 拖 nw 手柄向右下，选区缩到 < MIN_SIZE → _region = None
+    sel.mousePressEvent(Event(200, 150))
+    assert sel._drag_op == ("nw", "resize")
+    sel.mouseMoveEvent(Event(447, 297))
+    assert sel._region is None
+
+    sel.mouseReleaseEvent(Event(447, 297))
+    assert sel._mode == "select"
+    assert not sel._tb_visible
+    assert all(not b.isEnabled() for b in sel._tool_btns.values())
 
 
 # =================================================================== #

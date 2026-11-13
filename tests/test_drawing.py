@@ -206,7 +206,11 @@ def test_draw_brush_matches_full_supersample():
     result = img.copy()
     draw_brush(result, points, "#ff0000", 3)
     w, h = img.size
-    for i, (e, r) in enumerate(zip(expected.getdata(), result.getdata())):
+    # 用 tobytes 逐像素比对（getdata 在 Pillow 14 移除；RGB 为 3 字节/像素）
+    eb, rb = expected.tobytes(), result.tobytes()
+    for i in range(w * h):
+        e = eb[i * 3:(i + 1) * 3]
+        r = rb[i * 3:(i + 1) * 3]
         x, y = divmod(i, w)
         if 4 <= x < w - 4 and 4 <= y < h - 4:
             assert e == r, f"内部像素 ({x},{y}) 不一致: {e} != {r}"
@@ -220,7 +224,7 @@ def test_draw_brush_single_point_matches_reference():
     expected = _full_supersample_reference(img, [(30, 30)], "#00ff00", 5)
     result = img.copy()
     draw_brush(result, [(30, 30)], "#00ff00", 5)
-    assert list(result.getdata()) == list(expected.getdata())
+    assert result.tobytes() == expected.tobytes()
 
 
 def test_alt_pressed_state_fallback(monkeypatch):

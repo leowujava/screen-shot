@@ -545,6 +545,11 @@ class Selector(QWidget):
     HANDLE_SIZE = 12
     MARGIN = 8
 
+    # 画笔拖动中每 N 段整图补齐一次：防止长笔画上累计 patch 包围盒无限增长
+    # （patch 覆盖"上次整图转换以来"的全部线段，不能只靠单段小 patch，
+    # 否则拖动中只剩最后一段可见、"看不见轨迹"）。
+    _BRUSH_FULL_REFRESH_EVERY = 12
+
     # 8 个手柄的标识
     HANDLES = ("nw", "n", "ne", "e", "se", "s", "sw", "w")
 
@@ -592,6 +597,8 @@ class Selector(QWidget):
         self._base_pixmap = None
         self._region_pixmap = None
         self._brush_patch = None  # 画笔 stroke 中的局部 patch：(QPixmap, ox, oy)，选区局部坐标
+        self._brush_bbox = None   # 自上次整图转换以来全部线段点的累计包围盒（选区局部坐标）
+        self._brush_moves = 0     # 自上次整图转换以来的 move 段数（周期补齐计数）
         self._label_fm = None     # 十字准星尺寸标签 QFontMetrics（惰性缓存，避免每帧重建）
         self._tb_visible = False
         self._tb_size = None
@@ -1097,25 +1104,37 @@ class Selector(QWidget):
         except Exception:
             self._region_pixmap = None
 
-    def _refresh_brush_patch(self, p0, p1):
-        """画笔 stroke 中：只把当前线段包围盒转成小 patch QPixmap，不做整图转换。
+    def _expand_brush_bbox(self, p0, p1):
+        """把线段两端点并入累计包围盒并返回 (x0, y0, x1, y1)（选区局部坐标）。
 
-        p0/p1 为当前线段两端点（选区局部坐标）。包围盒外扩边距与 draw_brush
-        的局部超采样边距一致（max(2×笔宽, 8)），保证覆盖线段全部像素。
-        paintEvent 把 patch 合成在选区底图 pixmap 上；收笔后
-        _refresh_region_pixmap 整图转换一次并清掉 patch。
+        累计包围盒覆盖"自上次整图转换以来"的全部线段点：只覆盖最后一段会
+        导致拖动中早期轨迹落在 patch 之外（表现为"看不见轨迹"）。
+        """
+        b = self._brush_bbox
+        if b is None:
+            b = (min(p0[0], p1[0]), min(p0[1], p1[1]),
+                 max(p0[0], p1[0]), max(p0[1], p1[1]))
+        else:
+            b = (min(b[0], p0[0], p1[0]), min(b[1], p0[1], p1[1]),
+                 max(b[2], p0[0], p1[0]), max(b[3], p0[1], p1[1]))
+        self._brush_bbox = b
+        return b
+
+    def _refresh_brush_patch(self, x0, y0, x1, y1):
+        """画笔 stroke 中：只把累计线段包围盒转成 patch QPixmap，不做整图转换。
+
+        (x0, y0, x1, y1) 为自上次整图转换以来全部线段点的包围盒（选区局部
+        坐标）。外扩边距与 draw_brush 的局部超采样边距一致（max(2×笔宽, 8)），
+        保证覆盖线段全部像素。paintEvent 把 patch 合成在选区底图 pixmap 上；
+        每 _BRUSH_FULL_REFRESH_EVERY 段与收笔后各整图转换一次并清掉 patch。
         """
         if self._region_img is None:
             self._brush_patch = None
             return
         margin = max(2 * self.width_attr, 8)
-        x0 = min(p0[0], p1[0]) - margin
-        y0 = min(p0[1], p1[1]) - margin
-        x1 = max(p0[0], p1[0]) + margin
-        y1 = max(p0[1], p1[1]) + margin
         W, H = self._region_img.size
-        cx0, cy0 = max(0, int(x0)), max(0, int(y0))
-        cx1, cy1 = min(W, int(x1)), min(H, int(y1))
+        cx0, cy0 = max(0, int(x0) - margin), max(0, int(y0) - margin)
+        cx1, cy1 = min(W, int(x1) + margin), min(H, int(y1) + margin)
         if cx1 - cx0 < 1 or cy1 - cy0 < 1:
             # 包围盒退化（极短线段）：退回整图转换，避免预览缺失
             self._brush_patch = None
@@ -1339,6 +1358,10 @@ class Selector(QWidget):
             if self.tool == "brush":
                 d = ImageDraw.Draw(self._region_img)
                 d.point(self.draw_start, fill=self.color)
+                # 起笔整图转换一次作底图，并重置累计 patch 状态
+                # （bbox=None：首帧由 _expand_brush_bbox 从 _brush_last/当前点初始化）
+                self._brush_moves = 0
+                self._brush_bbox = None
                 self._refresh_region_pixmap()
                 self.update()
             self._update_cursor()
@@ -1416,9 +1439,18 @@ class Selector(QWidget):
             if self.tool == "brush":
                 draw_brush(self._region_img, [self._brush_last, (rx, ry)],
                            self.color, self.width_attr)
-                # 局部 patch 增量更新：只转换线段包围盒小区域，
-                # 避免每帧整图 PIL→QPixmap 转换（画笔卡顿主热点）
-                self._refresh_brush_patch(self._brush_last, (rx, ry))
+                # 局部 patch 增量更新：只转换"自上次整图转换以来"累计线段
+                # 包围盒，避免每帧整图转换，也不能只转最后一段（会丢轨迹）。
+                # 每 _BRUSH_FULL_REFRESH_EVERY 段整图补齐一次，防止包围盒膨胀。
+                self._brush_moves += 1
+                if self._brush_moves >= self._BRUSH_FULL_REFRESH_EVERY:
+                    self._brush_moves = 0
+                    self._brush_bbox = None
+                    self._refresh_region_pixmap()
+                else:
+                    x0, y0, x1, y1 = self._expand_brush_bbox(
+                        self._brush_last, (rx, ry))
+                    self._refresh_brush_patch(x0, y0, x1, y1)
                 self._brush_last = (rx, ry)
                 self.update()
             else:
@@ -1507,7 +1539,9 @@ class Selector(QWidget):
         sx, sy = self.draw_start
         self._preview = None
         if self.tool == "brush":
-            pass  # 画笔已在拖动中增量绘制
+            # 画笔已在拖动中增量绘制；重置累计 patch 状态（下方统一整图转换）
+            self._brush_moves = 0
+            self._brush_bbox = None
         elif self.tool == "rect":
             draw_rect(self._region_img,
                       [min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry)],
@@ -1795,6 +1829,7 @@ class Selector(QWidget):
         self._region_img = None
         self._region_pixmap = None
         self._brush_patch = None
+        self._brush_bbox = None
         self.undo.clear()
 
 

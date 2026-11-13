@@ -452,13 +452,13 @@ def test_drag_frame_cost_bounded(sel_env):
     )
 
 
-def test_brush_stroke_converts_region_pixmap_only_twice(sel_env, monkeypatch):
-    """画笔 stroke：整图 PIL→QPixmap 转换只在起笔/收笔各一次，不随 mouseMove。
+def test_brush_stroke_full_conversions_bounded(sel_env, monkeypatch):
+    """画笔 stroke：整图 PIL→QPixmap 转换次数有界（起笔 + 周期补齐 + 收笔），不随 mouseMove 线性增长。
 
     回归：旧实现每个 B1-Motion 都把整张选区图重转一次 QPixmap
     （2000x1200 选区 ≈ 每帧 9MB+ 拷贝），是画笔卡顿的主要来源。
-    现在：起笔整图转换一次作底图，拖动中只转线段包围盒小 patch，
-    收笔后再整图转换一次。
+    现在：拖动中只转累计 patch（每 N 段整图补齐一次，防止 patch 包围盒
+    在长笔画上无限增长），收笔整图转换一次。
     """
     full = Image.new("RGB", (300, 300), (255, 255, 255))
     sel = _make(sel_env, width=300, height=300, full_img=full)
@@ -481,18 +481,21 @@ def test_brush_stroke_converts_region_pixmap_only_twice(sel_env, monkeypatch):
 
     monkeypatch.setattr(sel_mod, "_pil_to_qpixmap", counting)
 
+    moves = 49
     sel.mousePressEvent(Event(20, 20))
-    for i in range(1, 50):
+    for i in range(1, moves + 1):
         sel.mouseMoveEvent(Event(20 + i, 20 + i))
-    sel.mouseReleaseEvent(Event(69, 69))
-    assert count["n"] == 2, (
-        f"画笔 stroke 触发 {count['n']} 次整图转换（期望 2：起笔 + 收笔），"
+    sel.mouseReleaseEvent(Event(20 + moves, 20 + moves))
+    expected = 1 + moves // sel._BRUSH_FULL_REFRESH_EVERY + 1  # 起笔 + 周期补齐 + 收笔
+    assert count["n"] == expected, (
+        f"画笔 stroke 触发 {count['n']} 次整图转换（期望 {expected}：起笔 + 周期补齐 + 收笔），"
         f"未实现 stroke 局部 patch 增量渲染"
     )
+    assert count["n"] < 10, f"整图转换 {count['n']} 次，随 mouseMove 线性增长"
 
 
 def test_brush_patch_visible_during_stroke(sel_env):
-    """画笔拖动中（move 后、release 前）渲染已可见线段（局部 patch 合成）。"""
+    """画笔拖动中（未 release）渲染已可见完整轨迹（累计 patch），不只是最后一段。"""
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     sel = _make(sel_env, width=100, height=100, full_img=full)
     sel._mode = "adjust"
@@ -503,12 +506,39 @@ def test_brush_patch_visible_during_stroke(sel_env):
     sel.width_attr = 3
 
     sel.mousePressEvent(Event(20, 20))
+    sel.mouseMoveEvent(Event(40, 40))
     sel.mouseMoveEvent(Event(60, 60))
-    # stroke 进行中（未 release）：渲染必须已显示线段，不能等收笔整图转换
-    assert _close(_rgb(_render_image(sel), 40, 40), (0, 0, 0), 30), \
-        "画笔拖动中段线段未在渲染中显示"
-    sel.mouseReleaseEvent(Event(60, 60))
-    assert _close(_rgb(_render_image(sel), 40, 40), (0, 0, 0), 30)
+    sel.mouseMoveEvent(Event(80, 80))
+    # stroke 进行中（未 release）：第一段与最后一段都必须可见
+    img = _render_image(sel)
+    assert _close(_rgb(img, 30, 30), (0, 0, 0), 30), \
+        "画笔拖动中第一段轨迹不可见（patch 只覆盖了最后一段）"
+    assert _close(_rgb(img, 70, 70), (0, 0, 0), 30), \
+        "画笔拖动中最后一段轨迹不可见"
+    sel.mouseReleaseEvent(Event(80, 80))
+    img = _render_image(sel)
+    assert _close(_rgb(img, 30, 30), (0, 0, 0), 30)
+    assert _close(_rgb(img, 70, 70), (0, 0, 0), 30)
+
+
+def test_brush_snake_stroke_keeps_earlier_segments(sel_env):
+    """画笔先长距离拖动、再做小抖动时，前面的长段轨迹不能被小 patch 挤掉。"""
+    full = Image.new("RGB", (160, 100), (255, 255, 255))
+    sel = _make(sel_env, width=160, height=100, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 150, 90)
+    sel._init_region_img()
+    sel.tool = "brush"
+    sel.color = "#000000"
+    sel.width_attr = 3
+
+    sel.mousePressEvent(Event(20, 50))
+    sel.mouseMoveEvent(Event(120, 50))   # 长段
+    sel.mouseMoveEvent(Event(118, 52))   # 小抖动
+    img = _render_image(sel)
+    assert _close(_rgb(img, 70, 50), (0, 0, 0), 30), \
+        "长段轨迹中段不可见（patch 丢失早期线段）"
+    assert _close(_rgb(img, 119, 51), (0, 0, 0), 30), "抖动段轨迹不可见"
 
 
 def test_handle_resize_does_not_convert_region_per_frame(sel_env, monkeypatch):

@@ -47,6 +47,7 @@ class EditorWindow(QMainWindow):
 
         self._ocr_text_ready.connect(self._show_ocr_result)
         self._ocr_failed.connect(self._on_ocr_failed)
+        self._ocr_busy = False  # OCR 进行中：忽略连点，避免叠开多个结果弹窗
 
         self._refresh_preview()
 
@@ -100,7 +101,12 @@ class EditorWindow(QMainWindow):
 
         引擎懒加载（首次会读 OCR 模型）也在工作线程执行。
         结果通过跨线程信号排队回主线程弹窗，与选区工具行为一致。
+        进行中禁用按钮并忽略连点。
         """
+        if self._ocr_busy:
+            return
+        self._ocr_busy = True
+        self.ocr_btn.setEnabled(False)
         img = self.image.copy()
 
         def run():
@@ -117,11 +123,18 @@ class EditorWindow(QMainWindow):
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _ocr_done(self):
+        """OCR 结束（成功/失败共用）：复位进行中状态，恢复按钮。"""
+        self._ocr_busy = False
+        self.ocr_btn.setEnabled(True)
+
     def _show_ocr_result(self, text):
+        self._ocr_done()
         if not text:
             QMessageBox.information(self, "识别文字", "未识别到文字。")
         else:
             QMessageBox.information(self, "识别文字", text)
 
     def _on_ocr_failed(self, msg):
+        self._ocr_done()
         QMessageBox.critical(self, "识别失败", msg)

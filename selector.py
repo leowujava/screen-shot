@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from applog import get_logger
 from drawing import (
     arrow_geometry, draw_arrow, draw_rect, draw_ellipse, draw_brush,
     draw_text, mosaic, UndoStack, get_ocr_engine, ocr_result_to_text,
@@ -240,6 +241,7 @@ class Selector(QWidget):
         self._cursor = Qt.CrossCursor
         self._finished = False
         self._pending_callback = None
+        self._ocr_busy = False  # OCR 进行中：忽略连点，避免叠开多个结果弹窗
 
         # 标注状态（默认颜色 = 色板第一色，与截图中箭头红色一致）
         self.tool = "move"
@@ -657,6 +659,13 @@ class Selector(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        try:
+            self._paint_all(p)
+        finally:
+            # 绘制中途抛异常也必须 end，否则 QPainter 残留 active 状态
+            p.end()
+
+    def _paint_all(self, p):
         W, H = self._actual_w, self._actual_h
         if self._base_pixmap is not None:
             p.drawPixmap(0, 0, self._base_pixmap)
@@ -694,7 +703,6 @@ class Selector(QWidget):
             self._paint_crosshair(p)
         if self._preview is not None:
             self._paint_preview(p)
-        p.end()
 
     def _paint_border(self, p, l, t, r, b):
         """选区边框：白色外线 + 内侧深色细线（双线），白/深背景均可见。"""
@@ -881,8 +889,7 @@ class Selector(QWidget):
 
     def _abort_capture(self, exc):
         """截屏/裁剪失败兜底：回到 select 模式并提示，异常不穿透 Qt 事件循环。"""
-        import traceback
-        traceback.print_exc()
+        get_logger().error("截图失败", exc_info=True)
         self.full_img = None
         self._base_pixmap = None
         self._region_img = None
@@ -1454,8 +1461,11 @@ class Selector(QWidget):
             self.update()
             return
         if self.tool == "arrow":
-            # 箭头用实际起止点（不 clamp 到 bounding box），保证方向正确
-            self._preview = {"tool": "arrow", "start": (x0, y0), "end": (x1, y1)}
+            # 端点 clamp 到选区（与最终渲染的 _region_point 一致），
+            # 预览不画出选区外；分别 clamp 两端，方向保持正确
+            ax0, ay0 = max(l, min(x0, r)), max(t, min(y0, b))
+            ax1, ay1 = max(l, min(x1, r)), max(t, min(y1, b))
+            self._preview = {"tool": "arrow", "start": (ax0, ay0), "end": (ax1, ay1)}
         else:
             self._preview = {"tool": self.tool,
                              "box": (px0, py0, px1, py1)}
@@ -1519,8 +1529,10 @@ class Selector(QWidget):
         text = self._input_text_dialog(x, y)
         if text:
             self.undo.push(self._region_img.copy())
-            draw_text(self._region_img, (x, y), text, self.color,
-                      max(1, int(round(16 * self._region_scale))))
+            # 字号随线宽旋钮联动（12 + 2×线宽），与其他工具行为一致
+            font_size = max(1, int(round((12 + 2 * self.width_attr)
+                                         * self._region_scale)))
+            draw_text(self._region_img, (x, y), text, self.color, font_size)
             self._render_all()
 
     def _input_text_dialog(self, x, y):
@@ -1550,20 +1562,12 @@ class Selector(QWidget):
         prev = self.undo.pop()
         if prev is not None:
             self._region_img = prev
+            # update() 已触发重绘；不要在此 processEvents——嵌套事件循环
+            # 会让排队的 OCR 弹窗/定时器在撤销中途重入。
             self._render_all()
-            # 诊断日志：撤销后强制刷新，确认渲染生效。
-            # 若用户报告"撤销没反应"，检查 _render_all 是否被调用、
-            # _region_img 是否为预期的图。
-            app = QApplication.instance()
-            if app is not None:
-                try:
-                    app.processEvents()
-                except Exception:
-                    pass
 
     def _select_tool(self, name):
         self.tool = name
-        self._prev_tool = name
         self._tb_active_tool = name
         # 不 activateWindow / 不抢焦点（对齐旧版"只重设 topmost、不 lift"）：
         # 工具条的置顶已在窗口标志中，切换工具只更新按钮高亮。
@@ -1595,9 +1599,12 @@ class Selector(QWidget):
 
         引擎懒加载（首次会读 OCR 模型）也放在工作线程：否则第一次点击
         "识别文字"会在主线程阻塞数秒，与"识别期间界面不卡死"不符。
+        进行中禁用按钮并忽略连点：避免叠开多个线程/结果弹窗。
         """
-        if self._region_img is None:
+        if self._region_img is None or self._ocr_busy:
             return
+        self._ocr_busy = True
+        self._tb_btns["ocr"].setEnabled(False)
 
         img = self._region_img.copy()
 
@@ -1620,13 +1627,20 @@ class Selector(QWidget):
         # 结果通过跨线程信号排队回主线程处理。
         threading.Thread(target=run, daemon=True).start()
 
+    def _ocr_done(self):
+        """OCR 结束（成功/失败共用）：复位进行中状态，恢复按钮。"""
+        self._ocr_busy = False
+        self._tb_btns["ocr"].setEnabled(True)
+
     def _on_ocr_failed(self, msg):
+        self._ocr_done()
         if self._finished:
             return
         QMessageBox.critical(self, "识别失败", msg)
 
     def _show_ocr_result(self, text):
         """弹窗显示识别结果，支持复制全部 / 复制选中 / Ctrl+C。"""
+        self._ocr_done()
         if self._finished:
             return
         if not text:

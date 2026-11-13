@@ -84,8 +84,39 @@ def test_copy_text_to_clipboard_sets_unicode_text():
 
 def test_copy_text_to_clipboard_returns_false_on_error():
     from unittest.mock import patch
-    with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")):
+    import capture
+    with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")) as oc, \
+         patch("time.sleep"):
         assert copy_text_to_clipboard("x") is False
+    # 瞬时占用按重试策略尝试多次后才判定失败
+    assert oc.call_count == capture._CLIPBOARD_RETRIES
+
+
+def test_copy_to_clipboard_retries_transient_clipboard_busy():
+    """剪贴板被短暂占用：重试后成功，不把瞬时占用当永久失败。"""
+    from unittest.mock import patch
+    with patch("win32clipboard.OpenClipboard",
+               side_effect=[OSError("busy"), OSError("busy"), None]) as oc, \
+         patch("win32clipboard.EmptyClipboard"), \
+         patch("win32clipboard.SetClipboardData") as scd, \
+         patch("win32clipboard.CloseClipboard"), \
+         patch("time.sleep"):
+        copy_to_clipboard(Image.new("RGB", (2, 2), (255, 0, 0)))
+    assert oc.call_count == 3
+    scd.assert_called_once()
+
+
+def test_copy_text_to_clipboard_retries_then_succeeds():
+    from unittest.mock import patch
+    with patch("win32clipboard.OpenClipboard",
+               side_effect=[OSError("busy"), None]) as oc, \
+         patch("win32clipboard.EmptyClipboard"), \
+         patch("win32clipboard.SetClipboardData") as scd, \
+         patch("win32clipboard.CloseClipboard"), \
+         patch("time.sleep"):
+        assert copy_text_to_clipboard("hi") is True
+    assert oc.call_count == 2
+    scd.assert_called_once_with(13, "hi")  # CF_UNICODETEXT
 
 
 def test_copy_to_clipboard_sets_only_dib():

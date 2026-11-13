@@ -142,3 +142,19 @@ def test_process_fullscreen_capture_save_failure_still_copies():
     cc.assert_called_once_with(img)
     mock_err.assert_called_once()
 
+
+def test_single_instance_mutex_blocks_second_acquire():
+    """单实例：持有句柄期间再次获取返回 None；释放后可重新获取。"""
+    import ctypes
+    import app
+    name = "Local\\screen-shot-test-mutex"
+    h = app._acquire_single_instance_mutex(name)
+    assert h is not None
+    try:
+        assert app._acquire_single_instance_mutex(name) is None
+    finally:
+        ctypes.windll.kernel32.CloseHandle(h)
+    h2 = app._acquire_single_instance_mutex(name)
+    assert h2 is not None
+    ctypes.windll.kernel32.CloseHandle(h2)
+

@@ -227,15 +227,19 @@ def test_draw_brush_single_point_matches_reference():
     assert result.tobytes() == expected.tobytes()
 
 
-def test_alt_pressed_state_fallback(monkeypatch):
+def test_alt_pressed_modifiers_fallback(monkeypatch):
+    """非 Windows 回退读 Qt 事件 modifiers()（Qt.AltModifier = 0x02000000）。"""
     import drawing, sys
 
     class Ev:
-        def __init__(self, state):
-            self.state = state
+        def __init__(self, mods):
+            self._mods = mods
+
+        def modifiers(self):
+            return self._mods
 
     monkeypatch.setattr(sys, "platform", "linux")
-    assert drawing.alt_pressed(Ev(0x20000)) is True
+    assert drawing.alt_pressed(Ev(0x02000000)) is True
     assert drawing.alt_pressed(Ev(0)) is False
     assert drawing.alt_pressed(None) is False
 

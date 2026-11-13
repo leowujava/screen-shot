@@ -1691,3 +1691,93 @@ def test_rect_ellipse_icons_are_square_proportion(sel_env):
 
     assert 0.9 <= bbox_ratio(sel_mod._paint_icon_rect) <= 1.1, "矩形图标应为方形比例"
     assert 0.9 <= bbox_ratio(sel_mod._paint_icon_ellipse) <= 1.1, "圆形图标应为正圆"
+
+
+# =================================================================== #
+# 健壮性回归（第二轮优化）
+# =================================================================== #
+
+def test_undo_does_not_pump_events(sel_env, qt_app):
+    """撤销不得 processEvents：嵌套事件循环会让排队的 OCR 弹窗/定时器
+    在撤销中途重入（诊断残留代码已移除）。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = _make(sel_env, width=100, height=100, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "rect"
+    sel.mousePressEvent(Event(20, 20))
+    sel.mouseReleaseEvent(Event(80, 80))
+    with patch.object(qt_app, "processEvents") as pe:
+        sel._undo()
+    pe.assert_not_called()
+    assert sel._region_img.getpixel((40, 40)) == (255, 255, 255)
+
+
+def test_ocr_ignores_clicks_while_busy(sel_env, qt_app):
+    """OCR 进行中：按钮禁用、连点被忽略（只有一个工作线程/一个弹窗）。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = _make(sel_env, width=100, height=100, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+
+    gate = threading.Event()
+    calls = []
+
+    def fake_engine(arr):
+        calls.append(1)
+        gate.wait(5)
+        return [[[[0, 0], [50, 0], [50, 10], [0, 10]], "hi", 0.9]]
+
+    with patch.object(sel_env, "get_ocr_engine", return_value=fake_engine), \
+         patch.object(sel_env, "_OcrResultDialog") as dlg_cls:
+        sel._ocr()
+        assert sel._ocr_busy is True
+        assert not sel._tb_btns["ocr"].isEnabled()
+        sel._ocr()  # 进行中连点应被忽略
+        sel._ocr()
+        gate.set()
+        deadline = time.time() + 5
+        while not dlg_cls.called and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.02)
+
+    assert len(calls) == 1, "连点生成了多个 OCR 工作线程"
+    dlg_cls.assert_called_once()
+    assert sel._ocr_busy is False
+    assert sel._tb_btns["ocr"].isEnabled()
+
+
+def test_arrow_preview_clamped_to_region(sel_env):
+    """箭头预览端点 clamp 到选区：与最终渲染一致，不画出选区外。"""
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    sel = _make(sel_env, width=100, height=100, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel.tool = "arrow"
+    sel._set_preview(20, 20, 200, 200)  # 终点在选区外
+    prev = sel._preview
+    assert prev["tool"] == "arrow"
+    assert prev["start"] == (20, 20)
+    assert prev["end"] == (90, 90)
+
+
+def test_text_font_size_scales_with_width(sel_env):
+    """文字字号随线宽旋钮联动：线宽越大字号越大（暗像素更多）。"""
+    def dark_count(width_attr):
+        full = Image.new("RGB", (200, 200), (255, 255, 255))
+        sel = _make(sel_env, width=200, height=200, full_img=full)
+        sel._mode = "adjust"
+        sel._region = (10, 10, 190, 190)
+        sel._init_region_img()
+        sel.tool = "text"
+        sel.color = "#000000"
+        sel.width_attr = width_attr
+        with patch.object(sel, "_input_text_dialog", return_value="Hi"):
+            sel._input_text(30, 30)
+        return sum(1 for x in range(25, 150) for y in range(25, 150)
+                   if sel._region_img.getpixel((x, y)) != (255, 255, 255))
+
+    assert dark_count(10) > dark_count(2)

@@ -76,3 +76,41 @@ def test_mismatched_physical_size_falls_back(monkeypatch):
     mappings, exact = screenmap.build_mappings(100, 100, 150, 150)
     assert exact is False
     assert mappings[0].pw == 150
+
+
+def test_same_size_monitors_paired_by_position(monkeypatch):
+    """同尺寸多屏：逻辑位置与物理不成比例时按相对位置（左→右）配对。
+
+    覆盖 _match_monitors_by_size 第二轮排序配对分支；物理显示器
+    枚举顺序故意打乱，配对结果仍须正确。
+    """
+    monkeypatch.setattr(screenmap, "_qt_screens", lambda: (
+        (0, 0, 2005, 500),
+        [((0, 0, 1000, 500), 1.0),
+         ((1005, 0, 1000, 500), 1.0)],
+    ))
+    monkeypatch.setattr(screenmap, "_win32_monitors", lambda: [
+        (1000, 0, 2000, 500),
+        (0, 0, 1000, 500),
+    ])
+    mappings, exact = screenmap.build_mappings(2005, 500, 2000, 500)
+    assert exact is True
+    assert (mappings[0].px, mappings[0].pw) == (0, 1000)
+    assert (mappings[1].px, mappings[1].pw) == (1000, 1000)
+
+
+def test_same_size_monitors_vertical_pairing(monkeypatch):
+    """同尺寸竖排双屏：按上→下顺序配对。"""
+    monkeypatch.setattr(screenmap, "_qt_screens", lambda: (
+        (0, 0, 1000, 1005),
+        [((0, 0, 1000, 500), 1.0),
+         ((0, 505, 1000, 500), 1.0)],
+    ))
+    monkeypatch.setattr(screenmap, "_win32_monitors", lambda: [
+        (0, 500, 1000, 1000),
+        (0, 0, 1000, 500),
+    ])
+    mappings, exact = screenmap.build_mappings(1000, 1005, 1000, 1000)
+    assert exact is True
+    assert (mappings[0].py, mappings[0].ph) == (0, 500)
+    assert (mappings[1].py, mappings[1].ph) == (500, 500)

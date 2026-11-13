@@ -110,7 +110,10 @@ def _load_font(size):
     # 全部失败：回退 Pillow 默认字体（同样按 size 缓存）
     font = _font_cache.get(("default", size))
     if font is None:
-        font = ImageFont.load_default()
+        try:
+            font = ImageFont.load_default(size=size)
+        except TypeError:  # Pillow < 10.1 不支持 size 参数
+            font = ImageFont.load_default()
         _font_cache[("default", size)] = font
     return font
 
@@ -145,7 +148,8 @@ def alt_pressed(event=None):
     """事件发生时是否真正按住 Alt（用于约束正圆/正方形）。
 
     Windows 下用 GetAsyncKeyState 查询实时按键状态（事件携带的修饰键
-    标志可能滞后，不可靠）；其余平台回退到 event.state。event 为 None 时 False。
+    标志可能滞后，不可靠）；其余平台回退到 Qt 事件的 modifiers()。
+    event 为 None 时 False。
     """
     if sys.platform.startswith("win"):
         try:
@@ -154,8 +158,15 @@ def alt_pressed(event=None):
             return bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
         except Exception:
             pass
-    state = getattr(event, "state", 0) or 0
-    return bool(state & 0x20000)
+    # Qt.AltModifier = 0x02000000。鸭子类型取 modifiers()，
+    # 不在纯 PIL 模块里引入 Qt 依赖。
+    modifiers = getattr(event, "modifiers", None)
+    if callable(modifiers):
+        try:
+            return bool(modifiers() & 0x02000000)
+        except Exception:
+            pass
+    return False
 
 
 def mosaic(img, left, top, right, bottom, block=24):

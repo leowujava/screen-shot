@@ -110,6 +110,28 @@ def _build_dib(img):
     return header + pixels_bu
 
 
+# 剪贴板打开重试：其他程序（Office / 剪贴板管理器 / 远程桌面）可能短暂
+# 占用剪贴板，瞬时占用不应视为永久失败。
+_CLIPBOARD_RETRIES = 8
+_CLIPBOARD_RETRY_DELAY = 0.05  # 秒，全部失败前总等待约 0.35s
+
+
+def _open_clipboard_with_retry():
+    """打开剪贴板；失败短间隔重试，全部失败抛最后一次异常。"""
+    import time
+    import win32clipboard
+    last_exc = None
+    for attempt in range(_CLIPBOARD_RETRIES):
+        try:
+            win32clipboard.OpenClipboard()
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _CLIPBOARD_RETRIES - 1:
+                time.sleep(_CLIPBOARD_RETRY_DELAY)
+    raise last_exc
+
+
 def copy_to_clipboard(img):
     """把图像复制到系统剪贴板（32 位 DIB，可直接 Ctrl+V 粘贴）。
 
@@ -125,7 +147,7 @@ def copy_to_clipboard(img):
 
     dib = _build_dib(img)
 
-    win32clipboard.OpenClipboard()
+    _open_clipboard_with_retry()
     try:
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(win32con.CF_DIB, dib)
@@ -138,7 +160,7 @@ def copy_text_to_clipboard(text):
     import win32clipboard
     import win32con
     try:
-        win32clipboard.OpenClipboard()
+        _open_clipboard_with_retry()
         try:
             win32clipboard.EmptyClipboard()
             win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)

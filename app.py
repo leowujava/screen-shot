@@ -9,6 +9,7 @@ import pystray
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from applog import get_logger
 from capture import (
     capture_fullscreen,
     capture_virtual_screen_size,
@@ -66,9 +67,8 @@ def _run_on_main(fn):
 
 
 def _report_error(title, exc):
-    """记录错误并在主线程弹出提示（不静默吞掉；调用方在哪个线程都能安全用）。"""
-    import traceback
-    traceback.print_exc()
+    """记录错误（文件日志 + 控制台）并在主线程弹出提示（不静默吞掉；调用方在哪个线程都能安全用）。"""
+    get_logger().error("%s: %s", title, exc, exc_info=True)
 
     def _show_error():
         try:
@@ -220,6 +220,27 @@ def _make_tray_icon_image():
     return img
 
 
+_SINGLE_INSTANCE_MUTEX = "Local\\screen-shot-single-instance"
+
+
+def _acquire_single_instance_mutex(name=_SINGLE_INSTANCE_MUTEX):
+    """单实例保护：可运行返回互斥体句柄，已有实例运行返回 None。
+
+    句柄须在进程生命周期内持有（关闭句柄即释放互斥体对象）。
+    Local\\ 命名空间按登录会话隔离，不同会话互不影响。
+    CreateMutexW 本身失败（极端异常）时返回 True 放行，不阻断启动。
+    """
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        return True
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return None
+    return handle
+
+
 def main():
     """主入口。
 
@@ -229,6 +250,14 @@ def main():
     - 所有 Qt 窗口（选区等）都在主线程创建、由 Qt 事件循环驱动；
       子线程需要触达 GUI 时通过 _run_on_main 调度回主线程。
     """
+    mutex = _acquire_single_instance_mutex()
+    if mutex is None:
+        get_logger().info("已有实例在运行，本实例退出")
+        return
+    # 持有句柄至进程结束：提前释放会让第二个实例得以启动
+    _gui["mutex"] = mutex
+    get_logger().info("screen-shot 启动")
+
     app = QApplication(sys.argv)
     # 选区窗口 hide 后不应导致应用退出（本应用没有常驻主窗口）
     app.setQuitOnLastWindowClosed(False)

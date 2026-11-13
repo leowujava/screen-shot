@@ -13,7 +13,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=_ocr_datas,
-    hiddenimports=['pystray._win32', 'pystray._xorg', 'pynput._util.win32', 'pynput.keyboard._win32', 'pynput.mouse._win32',
+    hiddenimports=['pystray._win32', 'pynput._util.win32', 'pynput.keyboard._win32', 'pynput.mouse._win32',
                    'mss.windows', 'mss.windows.gdi',
                    'rapidocr', 'rapidocr.main', 'rapidocr.utils', 'onnxruntime', 'numpy'],
     hookspath=[],
@@ -21,7 +21,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
+    optimize=1,
 )
 pyz = PYZ(a.pure)
 

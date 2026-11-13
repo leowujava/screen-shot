@@ -1,8 +1,10 @@
-mss
-Pillow
-pynput
-pystray
-pywin32
-rapidocr
-onnxruntime
-PySide6
+# 运行依赖（Windows-only 项目）
+# 下限按已知可用的版本标定，避免未来大版本破坏兼容性
+mss>=10,<11
+Pillow>=10
+pynput>=1.7,<2
+pystray>=0.19
+pywin32>=306
+rapidocr>=3,<4
+onnxruntime>=1.17
+PySide6>=6.5

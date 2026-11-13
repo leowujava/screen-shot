@@ -1,6 +1,7 @@
+import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFileDialog, QLabel, QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
@@ -10,6 +11,10 @@ from drawing import get_ocr_engine, ocr_result_to_text
 
 class EditorWindow(QMainWindow):
     """Simple PySide6-based screenshot editor window."""
+
+    # OCR 线程 → 主线程（跨线程信号自动排队投递到主线程）
+    _ocr_text_ready = Signal(str)
+    _ocr_failed = Signal(str)
 
     def __init__(self, image, parent=None):
         super().__init__(parent)
@@ -39,6 +44,9 @@ class EditorWindow(QMainWindow):
         self.copy_btn.clicked.connect(self.copy_image)
         self.ocr_btn.clicked.connect(self.ocr)
         self.close_btn.clicked.connect(self.close)
+
+        self._ocr_text_ready.connect(self._show_ocr_result)
+        self._ocr_failed.connect(self._on_ocr_failed)
 
         self._refresh_preview()
 
@@ -85,18 +93,32 @@ class EditorWindow(QMainWindow):
             QMessageBox.critical(self, "复制失败", str(exc))
 
     def ocr(self):
+        """识别图中文字（工作线程执行，避免 OCR 期间界面卡死）。
+
+        结果通过跨线程信号排队回主线程弹窗，与选区工具行为一致。
+        """
         engine = get_ocr_engine()
         if engine is None:
             QMessageBox.critical(self, "识别失败", "未安装 OCR 引擎。")
             return
 
-        try:
-            import numpy as np
-            result = engine(np.array(self.image.convert("RGB")))
-            text = ocr_result_to_text(result)
-            if not text:
-                QMessageBox.information(self, "识别文字", "未识别到文字。")
-            else:
-                QMessageBox.information(self, "识别文字", text)
-        except Exception as exc:
-            QMessageBox.critical(self, "识别失败", str(exc))
+        img = self.image.copy()
+
+        def run():
+            try:
+                import numpy as np
+                result = engine(np.array(img.convert("RGB")))
+                self._ocr_text_ready.emit(ocr_result_to_text(result))
+            except Exception as exc:
+                self._ocr_failed.emit(str(exc))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_ocr_result(self, text):
+        if not text:
+            QMessageBox.information(self, "识别文字", "未识别到文字。")
+        else:
+            QMessageBox.information(self, "识别文字", text)
+
+    def _on_ocr_failed(self, msg):
+        QMessageBox.critical(self, "识别失败", msg)

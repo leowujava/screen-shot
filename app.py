@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from capture import (
     capture_fullscreen,
-    capture_region,
     capture_virtual_screen_size,
     copy_to_clipboard,
     save_image,
@@ -109,6 +108,48 @@ def _virtual_screen_origin():
     return (user32.GetSystemMetrics(76), user32.GetSystemMetrics(77))
 
 
+def _on_copy(region, annotated_img):
+    """选区"复制"回调：region 为 None（取消）时不做任何事。"""
+    if region is None:
+        return
+    _safe_copy_to_clipboard(annotated_img)
+
+
+def _on_save(region, annotated_img):
+    """选区"保存"回调：region 为 None（取消）时不做任何事。"""
+    if region is None:
+        return
+    save_image(annotated_img, None)
+
+
+def _has_active_selector():
+    """是否存在未结束的选区窗口（防快捷键/托盘连点叠开多个 overlay）。"""
+    return any(not getattr(old, "_finished", True) for old in _selector_holder)
+
+
+def open_region_selector(vx, vy, vsize):
+    """创建并显示覆盖整个虚拟桌面的选区窗口（必须在主线程调用）。
+
+    已有未结束选区时忽略本次触发（不清理、不新建），避免叠窗；
+    已结束的历史选区窗口则清理掉，释放定格截图等内存。
+    """
+    if _has_active_selector():
+        return
+    for old in list(_selector_holder):
+        if getattr(old, "_finished", False):
+            _selector_holder.remove(old)
+    sel = Selector(
+        x=vx, y=vy, width=vsize[0], height=vsize[1],
+        full_img=None,
+        capture_screen=capture_fullscreen,
+        on_select=process_region_selection,
+        on_copy=_on_copy,
+        on_save=_on_save,
+    )
+    _selector_holder.append(sel)
+    sel.show()
+
+
 def do_region_capture():
     """框选区域截图（供快捷键和托盘调用）。
 
@@ -119,35 +160,7 @@ def do_region_capture():
     def worker():
         vsize = capture_virtual_screen_size()
         vx, vy = _virtual_screen_origin()
-
-        def _on_copy(region, annotated_img):
-            if region is None:
-                return
-            _safe_copy_to_clipboard(annotated_img)
-
-        def _on_save(region, annotated_img):
-            if region is None:
-                return
-            save_image(annotated_img, None)
-
-        def open_selector():
-            # 清理已结束的历史选区窗口，释放定格截图等内存
-            for old in list(_selector_holder):
-                if getattr(old, "_finished", False):
-                    _selector_holder.remove(old)
-            # 选区窗口覆盖整个虚拟桌面（所有屏幕）
-            sel = Selector(
-                x=vx, y=vy, width=vsize[0], height=vsize[1],
-                full_img=None,
-                capture_screen=capture_fullscreen,
-                on_select=lambda region, img: process_region_selection(region, img),
-                on_copy=_on_copy,
-                on_save=_on_save,
-            )
-            _selector_holder.append(sel)
-            sel.show()
-
-        _run_on_main(open_selector)
+        _run_on_main(lambda: open_region_selector(vx, vy, vsize))
 
     threading.Thread(target=worker, daemon=True).start()
 

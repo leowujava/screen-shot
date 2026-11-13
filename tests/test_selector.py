@@ -103,6 +103,38 @@ def test_selector_cancel_passes_none(sel_env):
     assert results["img"] is None
 
 
+def test_selector_releases_heavy_memory_after_finish(sel_env):
+    """选区结束（回调完成）后释放大块内存：定格截图/底图 pixmap/选区图/撤销快照。
+
+    回归：窗口 hide 后仍被 _selector_holder 引用，多屏定格截图（数十 MB）
+    会一直滞留到下一次框选。释放必须在回调之后（回调 lambda 调用时读取
+    self._region_img）。
+    """
+    full = Image.new("RGB", (100, 100), (255, 255, 255))
+    seen = {}
+    sel = _make(sel_env, width=100, height=100, full_img=full,
+                on_select=lambda region, img: seen.update(region=region, img=img))
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)
+    sel._init_region_img()
+    sel._render_all()
+    sel.undo.push(sel._region_img.copy())
+    assert sel.full_img is not None
+    assert sel._base_pixmap is not None
+    assert sel._region_pixmap is not None
+
+    sel._confirm()
+
+    # 回调仍能拿到选区图（释放排在回调之后）
+    assert seen["img"] is not None and seen["img"].size == (80, 80)
+    # 结束后大块内存已释放
+    assert sel.full_img is None
+    assert sel._base_pixmap is None
+    assert sel._region_img is None
+    assert sel._region_pixmap is None
+    assert len(sel.undo) == 0
+
+
 def test_toolbar_keypress_routes_to_selector(sel_env):
     """工具条按键转发给 selector（回归：_Toolbar(None) 导致 _selector 为 None 崩溃）。"""
     from PySide6.QtGui import QKeyEvent

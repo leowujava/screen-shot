@@ -1786,6 +1786,16 @@ class Selector(QWidget):
         self._pending_callback = None
         if cb is not None:
             cb()
+        # 回调完成后释放大块内存（定格截图 / 底图 pixmap / 选区图 / 撤销快照）。
+        # 窗口仍被 app._selector_holder 引用，不释放则多屏定格截图（数十 MB）
+        # 会滞留到下一次框选。注意必须排在回调之后：回调 lambda 调用时
+        # 读取 self._region_img。
+        self.full_img = None
+        self._base_pixmap = None
+        self._region_img = None
+        self._region_pixmap = None
+        self._brush_patch = None
+        self.undo.clear()
 
 
 # 向后兼容别名

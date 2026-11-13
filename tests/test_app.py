@@ -50,3 +50,46 @@ def test_do_copy_capture_reports_clipboard_failure():
         assert shown.wait(5)
     mock_err.assert_called_once()
 
+
+def test_open_region_selector_ignores_second_while_active():
+    """防叠窗：已有未结束选区时，再次触发不得新建第二个 overlay。"""
+    import app
+
+    app._selector_holder.clear()
+    try:
+        with patch.object(app, "Selector") as mock_sel:
+            mock_sel.return_value = MagicMock(_finished=False)
+            app.open_region_selector(0, 0, (1920, 1080))
+            app.open_region_selector(0, 0, (1920, 1080))
+            assert mock_sel.call_count == 1
+    finally:
+        app._selector_holder.clear()
+
+
+def test_open_region_selector_cleans_finished_and_reopens():
+    """已结束的历史选区被清理；结束后可再次正常打开新选区。"""
+    import app
+
+    old = MagicMock(_finished=True)
+    app._selector_holder.clear()
+    app._selector_holder.append(old)
+    try:
+        with patch.object(app, "Selector") as mock_sel:
+            mock_sel.return_value = MagicMock(_finished=False)
+            app.open_region_selector(0, 0, (1920, 1080))
+            assert mock_sel.call_count == 1
+    finally:
+        app._selector_holder.clear()
+
+
+def test_selector_copy_save_callbacks_ignore_cancel():
+    """取消（region=None）时复制/保存回调不执行任何动作。"""
+    import app
+
+    with patch.object(app, "_safe_copy_to_clipboard") as mock_copy, \
+         patch.object(app, "save_image") as mock_save:
+        app._on_copy(None, None)
+        app._on_save(None, None)
+        mock_copy.assert_not_called()
+        mock_save.assert_not_called()
+

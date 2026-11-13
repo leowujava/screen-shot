@@ -58,3 +58,44 @@ def test_rapidocr_onnxruntime_new_tuple_format():
         [0.1, 0.2, 0.3],
     )
     assert ocr_result_to_text(r) == "B\nC\nA\nD"
+
+
+def test_ocr_engine_initialized_once_under_concurrent_calls(monkeypatch):
+    """OCR 点击可能并发；模型懒加载必须只执行一次（工作线程安全）。"""
+    import sys
+    import threading
+    import time
+    import types
+
+    import drawing
+
+    calls = []
+    calls_lock = threading.Lock()
+
+    class FakeRapidOCR:
+        def __init__(self):
+            with calls_lock:
+                calls.append(1)
+            time.sleep(0.05)  # 放大并发窗口
+
+    fake = types.ModuleType("rapidocr")
+    fake.RapidOCR = FakeRapidOCR
+    monkeypatch.setitem(sys.modules, "rapidocr", fake)
+    monkeypatch.setattr(drawing, "_OCR_ENGINE", None)
+    monkeypatch.setattr(drawing, "_OCR_ENGINE_READY", False)
+
+    barrier = threading.Barrier(8)
+    results = []
+
+    def worker():
+        barrier.wait()
+        results.append(drawing.get_ocr_engine())
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(calls) == 1, f"OCR 引擎被初始化 {len(calls)} 次"
+    assert all(r is not None for r in results)

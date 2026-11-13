@@ -4,6 +4,7 @@ GUI 全部走 Qt offscreen 平台（见 conftest.py），构造真实的 Selecto
 不 mock Tk/画布；渲染类断言用 QWidget.render 取像素。
 """
 import time
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -328,6 +329,113 @@ def test_to_virtual_region(sel_env):
     sel._scale_x = 2.0
     sel._scale_y = 2.0
     assert sel._to_virtual_region() == (-1720, 100, 400, 200)
+
+
+# =================================================================== #
+# 高 DPI（Qt 逻辑坐标 vs mss 物理截图）
+# =================================================================== #
+
+def test_high_dpi_base_image_is_scaled_not_clipped(sel_env, monkeypatch):
+    """150% 缩放下底图必须整图缩放到逻辑窗口，而不是 1:1 贴图被裁掉右下角。"""
+    monkeypatch.setattr(sel_mod, "_virtual_screen_size", lambda: (100, 100))
+    full = Image.new("RGB", (150, 150), (255, 255, 255))
+    ImageDraw.Draw(full).rectangle([75, 0, 149, 149], fill=(200, 30, 30))
+
+    sel = _make(sel_env, width=150, height=150, full_img=full)
+    assert sel._scale_x == 1.5
+    # 显示底图是逻辑尺寸（100x100），不是物理尺寸（150x150）
+    assert sel._base_pixmap is not None
+    assert (sel._base_pixmap.width(), sel._base_pixmap.height()) == (100, 100)
+
+    sel._mode = "adjust"
+    sel._region = (10, 10, 50, 50)
+    sel._init_region_img()
+    sel._masks_hidden = True
+    sel.update()
+    img = _render_image(sel)
+    # 物理右半红块映射到逻辑 x >= 50：旧实现只显示左上 100x100，右侧会是黑/白
+    # （避开选区手柄：手柄是 24x24 白底方块，会盖住边缘附近的点）
+    assert _close(_rgb(img, 40, 20), (255, 255, 255), 10)
+    assert _close(_rgb(img, 70, 20), (200, 30, 30), 10)
+    assert _close(_rgb(img, 90, 90), (200, 30, 30), 10)
+
+
+def test_high_dpi_crop_uses_physical_pixels(sel_env, monkeypatch):
+    """高 DPI 选区裁剪必须按比例取物理像素，输出原始分辨率。"""
+    monkeypatch.setattr(sel_mod, "_virtual_screen_size", lambda: (100, 100))
+    full = Image.new("RGB", (150, 150), (255, 255, 255))
+    full.putpixel((75, 75), (255, 0, 0))
+
+    sel = _make(sel_env, width=150, height=150, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (40, 40, 60, 60)  # 逻辑 20x20 → 物理 30x30
+    sel._init_region_img()
+
+    assert (sel._region_img.width, sel._region_img.height) == (30, 30)
+    # 物理 (75,75) 对应选区局部 (15,15)
+    assert sel._region_img.getpixel((15, 15)) == (255, 0, 0)
+    assert sel._region_img.getpixel((5, 5)) == (255, 255, 255)
+    assert sel._to_virtual_region() == (60, 60, 30, 30)
+
+
+def test_high_dpi_annotation_coordinates_are_scaled(sel_env, monkeypatch):
+    """标注鼠标坐标与线宽必须按物理比例缩放，否则标注会画在错误位置。"""
+    monkeypatch.setattr(sel_mod, "_virtual_screen_size", lambda: (100, 100))
+    full = Image.new("RGB", (150, 150), (255, 255, 255))
+
+    sel = _make(sel_env, width=150, height=150, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (10, 10, 90, 90)  # 逻辑 80x80 → 物理 120x120
+    sel._init_region_img()
+    assert sel._region_img.size == (120, 120)
+
+    sel.tool = "rect"
+    sel.color = "#ff0000"
+    sel.width_attr = 2
+    sel.mousePressEvent(Event(20, 20))    # 物理 (15,15)
+    sel.mouseReleaseEvent(Event(80, 80))  # 物理 (105,105)
+    assert sel.draw_start == (15, 15)
+    # 左边界 x=15、y=60 应为红线
+    assert _close(sel._region_img.getpixel((15, 60)), (255, 0, 0), 25)
+
+
+def test_high_dpi_selection_render_keeps_physical_detail(sel_env, monkeypatch):
+    """选区 pixmap 使用 DPR，显示尺寸为逻辑大小但保留物理像素细节。"""
+    monkeypatch.setattr(sel_mod, "_virtual_screen_size", lambda: (100, 100))
+    full = Image.new("RGB", (150, 150), (255, 255, 255))
+    sel = _make(sel_env, width=150, height=150, full_img=full)
+    sel._mode = "adjust"
+    sel._region = (20, 20, 80, 80)
+    sel._init_region_img()
+    sel._render_all()
+    assert sel._region_pixmap.devicePixelRatio() == pytest.approx(1.5)
+    assert (sel._region_img.width, sel._region_img.height) == (90, 90)
+
+
+def test_mixed_dpi_crop_uses_screen_scale(sel_env):
+    """混合 DPI 下选区裁剪按所在显示器的物理比例换算（而非全局比例）。"""
+    from screenmap import ScreenMapping
+
+    sel = _make(sel_env, width=2880, height=1080)
+    sel._actual_w, sel._actual_h = 2880, 1080
+    sel._scale_x, sel._scale_y = 2.0, 2.0  # 全局比例（混合 DPI 下并不准确）
+    sel._mapping_exact = True
+    sel._screens = [
+        ScreenMapping(0, 0, 1920, 1080, 0, 0, 1920, 1080, 1.0, 1.0),
+        ScreenMapping(960, 0, 1920, 1080, 1920, 0, 3840, 2160, 2.0, 2.0),
+    ]
+    sel.full_img = Image.new("RGB", (5760, 2160), (255, 255, 255))
+    sel.full_img.putpixel((2100, 300), (255, 0, 0))
+
+    sel._mode = "adjust"
+    sel._region = (1000, 100, 1100, 200)  # 第二块屏（逻辑）内
+    sel._init_region_img()
+
+    assert sel._region_scale == 2.0
+    assert sel._region_img.size == (200, 200)
+    assert sel._region_img.getpixel((100, 100)) == (255, 0, 0)
+    assert sel._to_virtual_region() == (2000, 200, 200, 200)
+
 
 
 def test_calc_region_normalized(sel_env):
@@ -787,6 +895,67 @@ def test_toolbar_raised_again_when_overlay_activated(sel_env):
     assert sel._tb_visible
     sel.eventFilter(sel, QEvent(QEvent.Type.Paint))
     assert calls["n"] == 0
+
+
+# =================================================================== #
+# 颜色按钮（单击预设色板 / 双击取色器）
+# =================================================================== #
+
+def test_color_single_click_toggles_palette_every_time(sel_env):
+    """单击超时后必须清空计时器句柄；否则第二次单击会被误判为双击，
+    直接打开系统取色器，预设色板再也弹不出来。"""
+    sel = _make(sel_env, width=200, height=200)
+    with patch.object(sel, "_toggle_color_row") as toggle, \
+         patch.object(sel, "_pick_color") as pick:
+        sel._on_color_clicked()
+        assert sel._color_click_timer is not None
+        # 模拟单击 300ms 超时
+        sel._color_click_timer.timeout.emit()
+        assert toggle.called
+        assert sel._color_click_timer is None
+        assert not pick.called
+
+        # 再次单击：应重新开始计时，而不是直接打开取色器
+        sel._on_color_clicked()
+        assert not pick.called
+        assert sel._color_click_timer is not None
+        sel._color_click_timer.stop()
+
+
+def test_color_double_click_opens_picker(sel_env):
+    """300ms 内第二次点击 = 双击：打开系统取色器，不弹预设色板。"""
+    sel = _make(sel_env, width=200, height=200)
+    with patch.object(sel, "_toggle_color_row") as toggle, \
+         patch.object(sel, "_pick_color") as pick:
+        sel._on_color_clicked()
+        sel._on_color_clicked()
+        assert pick.called
+        assert not toggle.called
+        assert sel._color_click_timer is None
+
+
+# =================================================================== #
+# 截屏失败兜底
+# =================================================================== #
+
+def test_freeze_failure_returns_to_select_mode(sel_env):
+    """首次框选时截屏失败（锁屏/RDP 断开）必须回到 select 模式并提示，
+    异常不能穿透 Qt 事件循环导致进程退出。"""
+    def boom():
+        raise RuntimeError("screen unavailable")
+
+    sel = _make(sel_env, full_img=None, capture_screen=boom)
+    with patch.object(sel_mod, "QMessageBox") as mb:
+        sel.mousePressEvent(Event(20, 20))
+        sel.mouseMoveEvent(Event(80, 80))
+        sel.mouseReleaseEvent(Event(80, 80))
+
+    assert mb.critical.called
+    assert sel._mode == "select"
+    assert sel._region is None
+    assert sel.full_img is None
+    assert not sel._tb_visible
+    assert all(not b.isEnabled() for b in sel._tool_btns.values())
 
 
 # =================================================================== #
@@ -1281,6 +1450,8 @@ def test_select_tool_sets_topmost_but_no_lift(sel_env):
 
 def test_toolbar_stays_above_overlay_and_inside_screen_while_moving(sel_env):
     sel = _make(sel_env, x=-100, width=1000, height=800)
+    # 窗口逻辑原点在真实多屏下由 Qt 提供；offscreen 下用传入偏移模拟
+    sel._logical_origin_x, sel._logical_origin_y = -100, 0
     sel._actual_w, sel._actual_h = 1000, 800
     sel._tb_visible = True
     sel._tb_size = (180, 40)
@@ -1327,7 +1498,7 @@ def test_toolbar_first_show_at_final_geometry(sel_env):
 # OCR
 # =================================================================== #
 
-def test_ocr_missing_engine_shows_critical(sel_env):
+def test_ocr_missing_engine_shows_critical(sel_env, qt_app):
     """未安装 OCR 引擎时弹错误提示，不抛异常。"""
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     sel = _make(sel_env, width=100, height=100, full_img=full)
@@ -1338,21 +1509,32 @@ def test_ocr_missing_engine_shows_critical(sel_env):
     with patch.object(sel_env, "get_ocr_engine", return_value=None), \
          patch.object(sel_env, "QMessageBox") as mb:
         sel._ocr()
+        # 引擎加载已移到工作线程，错误通过跨线程信号回主线程弹窗
+        deadline = time.time() + 5
+        while not mb.critical.called and time.time() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.02)
     mb.critical.assert_called_once()
 
 
 def test_ocr_runs_in_thread_and_posts_result_on_main_thread(sel_env, qt_app):
-    """OCR 在工作线程执行，结果通过跨线程信号投递回主线程弹窗逻辑。"""
+    """OCR 引擎加载与识别都在工作线程执行，结果通过跨线程信号投递回主线程。"""
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     sel = _make(sel_env, width=100, height=100, full_img=full)
     sel._mode = "adjust"
     sel._region = (10, 10, 90, 90)
     sel._init_region_img()
 
+    engine_thread = []
+
     def fake_engine(arr):
         return [[[[0, 0], [50, 0], [50, 10], [0, 10]], "hello", 0.99]]
 
-    with patch.object(sel_env, "get_ocr_engine", return_value=fake_engine), \
+    def fake_get_ocr_engine():
+        engine_thread.append(threading.current_thread())
+        return fake_engine
+
+    with patch.object(sel_env, "get_ocr_engine", side_effect=fake_get_ocr_engine), \
          patch.object(sel, "_show_ocr_result") as show:
         sel._ocr()
         # 泵事件循环，等待工作线程的结果信号投递到主线程
@@ -1361,6 +1543,9 @@ def test_ocr_runs_in_thread_and_posts_result_on_main_thread(sel_env, qt_app):
             qt_app.processEvents()
             time.sleep(0.02)
 
+    assert engine_thread, "OCR 引擎未被加载"
+    assert engine_thread[0] is not threading.main_thread(), \
+        "OCR 引擎懒加载仍在主线程（首次识别会卡住界面）"
     assert show.called, "OCR 结果未投递回主线程"
     assert show.call_args[0][0] == "hello"
 

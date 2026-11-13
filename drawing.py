@@ -4,6 +4,7 @@
 """
 import math
 import sys
+import threading
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ---------------------------------------------------------------------------
@@ -12,29 +13,35 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 _OCR_ENGINE = None
 _OCR_ENGINE_READY = False
+# OCR 引擎在多个工作线程里并发触发时只初始化一次（模型加载很慢）
+_OCR_LOCK = threading.Lock()
 
 
 def get_ocr_engine():
     """懒加载 OCR 引擎（首次调用时初始化）。失败返回 None。
 
     优先使用 rapidocr（PP-OCRv6，中英混合）；回退 rapidocr-onnxruntime（仅中文）。
+    线程安全：OCR 点击可能并发，锁内二次检查避免重复加载模型。
     """
     global _OCR_ENGINE, _OCR_ENGINE_READY
     if _OCR_ENGINE_READY:
         return _OCR_ENGINE
-    try:
-        from rapidocr import RapidOCR
-        _OCR_ENGINE = RapidOCR()
-        _OCR_ENGINE_READY = True
-        return _OCR_ENGINE
-    except Exception:
+    with _OCR_LOCK:
+        if _OCR_ENGINE_READY:
+            return _OCR_ENGINE
         try:
-            from rapidocr_onnxruntime import RapidOCR
+            from rapidocr import RapidOCR
             _OCR_ENGINE = RapidOCR()
             _OCR_ENGINE_READY = True
             return _OCR_ENGINE
         except Exception:
-            return None
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                _OCR_ENGINE = RapidOCR()
+                _OCR_ENGINE_READY = True
+                return _OCR_ENGINE
+            except Exception:
+                return None
 
 
 def ocr_result_to_text(result):

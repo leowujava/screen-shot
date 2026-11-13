@@ -59,6 +59,7 @@ from drawing import (
     draw_text, mosaic, UndoStack, get_ocr_engine, ocr_result_to_text,
     alt_pressed,
 )
+from screenmap import build_mappings, qt_virtual_origin
 
 # 工具条配色（白底 + 蓝色高亮，仿飞书截图工具条）
 TB_BG = "#ffffff"
@@ -612,6 +613,9 @@ class Selector(QWidget):
         self._brush_bbox = None   # 自上次整图转换以来全部线段点的累计包围盒（选区局部坐标）
         self._brush_moves = 0     # 自上次整图转换以来的 move 段数（周期补齐计数）
         self._label_fm = None     # 十字准星尺寸标签 QFontMetrics（惰性缓存，避免每帧重建）
+        # 选区图物理分辨率 / 逻辑分辨率之比（高 DPI 下 > 1；普通屏为 1）
+        self._region_scale = 1.0
+        self._draw_start_logical = None
         self._tb_visible = False
         self._tb_size = None
         self._tb_row_state = 0
@@ -644,18 +648,29 @@ class Selector(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
 
-        # 动态计算实际屏幕大小（虚拟桌面）
+        # 动态计算实际屏幕大小（虚拟桌面，Qt 逻辑像素）
         self._actual_w, self._actual_h = _virtual_screen_size()
         if self._actual_w <= 0 or self._actual_h <= 0:
             # 查询失败（如测试环境）：退回调用方传入的尺寸
             self._actual_w, self._actual_h = width, height
+        # 全局缩放比：mss 物理像素 / Qt 逻辑像素（单屏高 DPI 下即 DPR）
         self._scale_x = width / self._actual_w if self._actual_w else 1.0
         self._scale_y = height / self._actual_h if self._actual_h else 1.0
-
-        self.setGeometry(x, y, self._actual_w, self._actual_h)
+        self._region_scale = self._scale_x
+        # 逐显示器映射：逻辑局部矩形 → 整屏截图物理矩形。
+        # 真实显示器信息一致时精确到每块屏（混合 DPI）；否则退化为整屏均匀缩放。
+        self._screens, self._mapping_exact = build_mappings(
+            self._actual_w, self._actual_h, width, height)
+        # 窗口几何使用 Qt 逻辑坐标；origin_x/y 仍是截图物理坐标（输出用）。
+        # Qt 可用时以它的虚拟桌面逻辑原点定位窗口/工具条（高 DPI、多屏都正确）；
+        # 查询失败（纯逻辑测试）才回退到调用方传入的坐标。
+        self._logical_origin_x, self._logical_origin_y = (
+            qt_virtual_origin() or (x, y))
+        self.setGeometry(self._logical_origin_x, self._logical_origin_y,
+                         self._actual_w, self._actual_h)
 
         if self.full_img is not None:
-            self._base_pixmap = _pil_to_qpixmap(self.full_img)
+            self._base_pixmap = self._build_base_pixmap(self.full_img)
         self._apply_window_opacity()
 
         self._build_toolbar()
@@ -677,6 +692,50 @@ class Selector(QWidget):
         """无定格截图时窗口半透明（黑底透出桌面）；定格后不透明。"""
         self.setWindowOpacity(DIM_WINDOW_OPACITY if self.full_img is None
                               else FULL_WINDOW_OPACITY)
+
+    def _build_base_pixmap(self, img):
+        """整屏物理截图 → 逻辑尺寸的显示底图。
+
+        高 DPI 下 Qt 窗口是逻辑像素、mss 截图是物理像素，直接
+        ``drawPixmap(0, 0)`` 会让底图被裁掉右下部分（并导致选区内容错位）。
+        这里按显示器把物理截图缩放/拼接到逻辑尺寸：
+
+        - 普通屏（尺寸一致）：直接转换，行为与旧版完全一致；
+        - 单屏高 DPI：整图缩放到逻辑尺寸；
+        - 多屏混合 DPI：逐屏裁剪并缩放到各自的逻辑矩形。
+
+        注意：Qt 在混合 DPI 下各屏的逻辑矩形可能重叠，单个窗口只能按
+        一份逻辑画布显示，重叠区最终显示其中一块屏的内容；选区输出走
+        `_crop_region` 的逐屏物理映射，不受这一显示限制影响。
+        """
+        W, H = self._actual_w, self._actual_h
+        if img.size == (W, H) or W <= 0 or H <= 0:
+            return _pil_to_qpixmap(img)
+
+        display = Image.new("RGB", (W, H))
+        iw, ih = img.size
+        for m in sorted(self._screens, key=lambda m: max(m.sx, m.sy)):
+            # 逻辑矩形裁剪到窗口范围
+            lx = max(0, m.lx)
+            ly = max(0, m.ly)
+            rx = min(W, m.lx + m.lw)
+            ry = min(H, m.ly + m.lh)
+            if rx <= lx or ry <= ly:
+                continue
+            # 对应物理矩形（到整屏截图像素），按逻辑裁剪量反算
+            fx0, fy0 = m.local_to_physical(lx, ly)
+            fx1, fy1 = m.local_to_physical(rx, ry)
+            box = (max(0, min(int(round(fx0)), iw)),
+                   max(0, min(int(round(fy0)), ih)),
+                   max(0, min(int(round(fx1)), iw)),
+                   max(0, min(int(round(fy1)), ih)))
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            crop = img.crop(box)
+            if crop.size != (rx - lx, ry - ly):
+                crop = crop.resize((rx - lx, ry - ly), Image.LANCZOS)
+            display.paste(crop, (lx, ly))
+        return _pil_to_qpixmap(display)
 
     def _force_focus(self):
         """把键盘焦点强制拉回 overlay（重映射窗口后焦点可能落到之前的应用）。"""
@@ -848,12 +907,21 @@ class Selector(QWidget):
             self._color_click_timer = QTimer(self.tb_win)
             self._color_click_timer.setSingleShot(True)
             self._color_click_timer.setInterval(300)
-            self._color_click_timer.timeout.connect(self._toggle_color_row)
+            self._color_click_timer.timeout.connect(self._on_color_single_click)
             self._color_click_timer.start()
         else:
             self._color_click_timer.stop()
             self._color_click_timer = None
             self._pick_color()
+
+    def _on_color_single_click(self):
+        """单击超时：复位计时器句柄后再弹板。
+
+        必须复位：否则下一次单击会看到残留的 timer 句柄，被误判成
+        "双击"，直接打开系统取色器，预设色板再也弹不出来。
+        """
+        self._color_click_timer = None
+        self._toggle_color_row()
 
     def _toggle_color_row(self):
         """在工具条内弹出/收起预设色板行（仿工具条截图）。"""
@@ -910,8 +978,8 @@ class Selector(QWidget):
             ty = y - tb_h - 4
         ty = max(0, min(ty, H - tb_h))
         tx = max(0, min(x, W - tb_w)) if tb_w else x
-        screen_x = self.origin_x + tx
-        screen_y = self.origin_y + ty
+        screen_x = self._logical_origin_x + tx
+        screen_y = self._logical_origin_y + ty
         tb.setGeometry(screen_x, screen_y, tb_w, tb_h)
         # 缓存工具条屏幕位置（供 _is_over_toolbar 使用，避免每帧查询窗口几何）
         self._tb_pos = (screen_x, screen_y, tb_w, tb_h)
@@ -942,8 +1010,8 @@ class Selector(QWidget):
         tx, ty, tw, th = pos
         if tw <= 1 or th <= 1:
             return False
-        sx = cx + self.origin_x
-        sy = cy + self.origin_y
+        sx = cx + self._logical_origin_x
+        sy = cy + self._logical_origin_y
         return tx <= sx <= tx + tw and ty <= sy <= ty + th
 
     def _set_toolbar_enabled(self, enabled):
@@ -998,7 +1066,8 @@ class Selector(QWidget):
             #（避免每帧整图 PIL→QPixmap 转换；收笔后整图转换并清 patch）
             if self._brush_patch is not None:
                 pm, ox, oy = self._brush_patch
-                p.drawPixmap(l + ox, t + oy, pm)
+                s = self._region_scale
+                p.drawPixmap(QPointF(l + ox / s, t + oy / s), pm)
             self._paint_border(p, l, t, r, b)
             if not self._dragging_box:
                 # 画框阶段不画手柄（与旧版轻量画框路径一致），定格完成后显示
@@ -1114,6 +1183,9 @@ class Selector(QWidget):
             return
         try:
             self._region_pixmap = _pil_to_qpixmap(self._region_img)
+            # 物理分辨率的选区图按 DPR 缩放绘制到逻辑选区矩形：
+            # 普通屏 DPR=1 行为不变；高 DPI 下显示尺寸正确且保留物理细节。
+            self._region_pixmap.setDevicePixelRatio(self._region_scale)
         except Exception:
             self._region_pixmap = None
 
@@ -1144,7 +1216,7 @@ class Selector(QWidget):
         if self._region_img is None:
             self._brush_patch = None
             return
-        margin = max(2 * self.width_attr, 8)
+        margin = max(2 * self.width_attr * self._region_scale, 8)
         W, H = self._region_img.size
         cx0, cy0 = max(0, int(x0) - margin), max(0, int(y0) - margin)
         cx1, cy1 = min(W, int(x1) + margin), min(H, int(y1) + margin)
@@ -1155,6 +1227,7 @@ class Selector(QWidget):
             return
         try:
             pm = _pil_to_qpixmap(self._region_img.crop((cx0, cy0, cx1, cy1)))
+            pm.setDevicePixelRatio(self._region_scale)
         except Exception:
             pm = None
         self._brush_patch = (pm, cx0, cy0) if pm is not None else None
@@ -1189,21 +1262,122 @@ class Selector(QWidget):
         if full is None:
             raise RuntimeError("Screen capture returned no image")
         self.full_img = full
-        self._base_pixmap = _pil_to_qpixmap(full)
+        self._base_pixmap = self._build_base_pixmap(full)
         self._apply_window_opacity()
+
+    def _abort_capture(self, exc):
+        """截屏/裁剪失败兜底：回到 select 模式并提示，异常不穿透 Qt 事件循环。"""
+        import traceback
+        traceback.print_exc()
+        self.full_img = None
+        self._base_pixmap = None
+        self._region_img = None
+        self._region_pixmap = None
+        self._brush_patch = None
+        self._brush_bbox = None
+        self.undo.clear()
+        self._region = None
+        self._mode = "select"
+        self._dragging_box = False
+        self._draw_start_logical = None
+        self._crosshair = None
+        self._preview = None
+        self._tb_hide()
+        self._set_toolbar_enabled(False)
+        self._apply_window_opacity()
+        self.update()
+        try:
+            QMessageBox.critical(self, "截图失败", str(exc))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # 选区 crop
     # ------------------------------------------------------------------ #
 
+    def _region_scale_for(self, region):
+        """选区覆盖屏幕中最大的物理/逻辑缩放比（输出分辨率不降级）。
+
+        单屏高 DPI：等于该屏 DPR；普通屏：1.0。选区跨多屏混合 DPI 时取最大
+        值，保证输出至少和最高 DPI 屏幕的物理像素一一对应。
+        """
+        l, t, r, b = region
+        scales = [max(m.sx, m.sy) for m in self._screens
+                  if m.intersects(l, t, r, b)]
+        if scales:
+            return max(scales)
+        return self._scale_x or 1.0
+
+    def _region_img_size(self, region):
+        """当前缩放比下，选区图应有的物理像素尺寸。"""
+        s = self._region_scale
+        l, t, r, b = region
+        return (max(1, int(round((r - l) * s))),
+                max(1, int(round((b - t) * s))))
+
+    def _crop_region(self, region, scale):
+        """按逻辑选区从整屏物理截图裁出选区图（物理分辨率）。
+
+        普通屏走与原实现等价的单次 crop；高 DPI / 多屏时逐显示器裁剪后
+        缩放到 ``逻辑尺寸 × scale`` 并拼接，保证输出为原始物理分辨率。
+        """
+        if self.full_img is None:
+            return None
+        l, t, r, b = region
+        ow = max(1, int(round((r - l) * scale)))
+        oh = max(1, int(round((b - t) * scale)))
+        out = Image.new("RGB", (ow, oh))
+        iw, ih = self.full_img.size
+        # 混合 DPI 下逻辑屏幕矩形可能重叠：按缩放比从低到高粘贴，
+        # 让高分辨率屏幕的物理内容覆盖重叠区（与 _local_to_full 一致）。
+        for m in sorted(self._screens, key=lambda m: max(m.sx, m.sy)):
+            il = max(l, m.lx)
+            it = max(t, m.ly)
+            ir = min(r, m.lx + m.lw)
+            ib = min(b, m.ly + m.lh)
+            if ir <= il or ib <= it:
+                continue
+            fx0, fy0 = m.local_to_physical(il, it)
+            fx1, fy1 = m.local_to_physical(ir, ib)
+            box = (max(0, min(int(round(fx0)), iw)),
+                   max(0, min(int(round(fy0)), ih)),
+                   max(0, min(int(round(fx1)), iw)),
+                   max(0, min(int(round(fy1)), ih)))
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            crop = self.full_img.crop(box)
+            tw = max(1, int(round((ir - il) * scale)))
+            th = max(1, int(round((ib - it) * scale)))
+            if crop.size != (tw, th):
+                crop = crop.resize((tw, th), Image.LANCZOS)
+            out.paste(crop, (int(round((il - l) * scale)),
+                             int(round((it - t) * scale))))
+        return out
+
     def _init_region_img(self):
         """从 full_img crop 出 region_img，并按选区尺寸调整撤销快照上限。"""
         if self.full_img is None:
             return
+        scale = self._region_scale_for(self._region)
+        img = self._crop_region(self._region, scale)
+        if img is None:
+            return
+        self._region_scale = scale
+        self._region_img = img
+        self.undo.maxlen = self._undo_maxlen_for(img.width, img.height)
+
+    def _region_point(self, x, y):
+        """overlay 逻辑坐标 → 选区图物理坐标（越界自动 clamp）。
+
+        普通屏 scale=1 时与旧实现 ``x - left`` 完全等价。
+        """
         l, t, r, b = self._region
-        self._region_img = self.full_img.crop((l, t, r, b))
-        self.undo.maxlen = self._undo_maxlen_for(
-            self._region_img.width, self._region_img.height)
+        s = self._region_scale
+        rx = int(round((x - l) * s))
+        ry = int(round((y - t) * s))
+        max_x = max(0, int(round((r - l) * s)) - 1)
+        max_y = max(0, int(round((b - t) * s)) - 1)
+        return max(0, min(rx, max_x)), max(0, min(ry, max_y))
 
     @staticmethod
     def _undo_maxlen_for(w, h):
@@ -1278,16 +1452,36 @@ class Selector(QWidget):
         l, t, r, b = region
         return (r - l) <= 1 and (b - t) <= 1
 
+    def _local_to_full(self, x, y):
+        """overlay 逻辑坐标 → 整屏截图物理坐标（full_img 像素）。
+
+        精确逐屏映射时按所在显示器换算（混合 DPI 也正确）；逻辑屏幕矩形
+        可能重叠（Qt 混合 DPI），重叠区取缩放比最大的屏幕（与选区裁剪时
+        高分辨率块覆盖低分辨率块的规则一致）。否则按全局缩放比退化。
+        """
+        best = None
+        for m in self._screens:
+            if m.contains(x, y):
+                if best is None or max(m.sx, m.sy) >= max(best.sx, best.sy):
+                    best = m
+        if best is not None:
+            fx, fy = best.local_to_physical(x, y)
+            return int(round(fx)), int(round(fy))
+        return int(round(x * self._scale_x)), int(round(y * self._scale_y))
+
     def _to_virtual_region(self):
         """当前选区 → mss 虚拟桌面坐标 (left, top, width, height)；无选区返回 None。"""
         if self._region is None:
             return None
         l, t, r, b = self._region
-        vx_l = int(l * self._scale_x)
-        vx_t = int(t * self._scale_y)
-        vx_r = int(r * self._scale_x)
-        vx_b = int(b * self._scale_y)
-        return (vx_l + self.origin_x, vx_t + self.origin_y, vx_r - vx_l, vx_b - vx_t)
+        if self._mapping_exact:
+            fx_l, fy_t = self._local_to_full(l, t)
+            fx_r, fy_b = self._local_to_full(r, b)
+        else:
+            fx_l, fy_t = int(l * self._scale_x), int(t * self._scale_y)
+            fx_r, fy_b = int(r * self._scale_x), int(b * self._scale_y)
+        return (fx_l + self.origin_x, fy_t + self.origin_y,
+                fx_r - fx_l, fy_b - fy_t)
 
     def _normalize(self, region):
         l, t, r, b = region
@@ -1375,14 +1569,16 @@ class Selector(QWidget):
         if l <= x <= r and t <= y <= b:
             if self._region_img is None:
                 return
-            rx, ry = x - l, y - t
+            rx, ry = self._region_point(x, y)
             if self.tool == "text":
                 self._input_text(rx, ry)
                 self.drawing = False
                 self.draw_start = None
+                self._draw_start_logical = None
                 return
             self.drawing = True
             self.draw_start = (rx, ry)
+            self._draw_start_logical = (x, y)
             self._brush_last = (rx, ry)
             self._crosshair = None
             self.undo.push(self._region_img.copy())
@@ -1426,7 +1622,13 @@ class Selector(QWidget):
             self._region = self._normalize((x1, y1, x2, y2))
             if self._region:
                 l, t, r, b = self._region
-                self._crosshair = (x, y, r - l, b - t)
+                # 标签显示实际输出（物理）尺寸，高 DPI 下与保存结果一致
+                scale = self._region_scale_for(self._region)
+                self._crosshair = (
+                    x, y,
+                    int(round((r - l) * scale)),
+                    int(round((b - t) * scale)),
+                )
             self._render_all()
             return
         # 手柄 resize / 移动
@@ -1463,13 +1665,11 @@ class Selector(QWidget):
             return
         # 标注
         if self.drawing and self._region_img is not None:
-            l, t, r, b = self._region
-            rx, ry = x - l, y - t
-            rx = max(0, min(rx, r - l - 1))
-            ry = max(0, min(ry, b - t - 1))
+            rx, ry = self._region_point(x, y)
+            s = self._region_scale
             if self.tool == "brush":
                 draw_brush(self._region_img, [self._brush_last, (rx, ry)],
-                           self.color, self.width_attr)
+                           self.color, self.width_attr * s)
                 # 局部 patch 增量更新：只转换"自上次整图转换以来"累计线段
                 # 包围盒，避免每帧整图转换，也不能只转最后一段（会丢轨迹）。
                 # 每 _BRUSH_FULL_REFRESH_EVERY 段整图补齐一次，防止包围盒膨胀。
@@ -1485,14 +1685,14 @@ class Selector(QWidget):
                 self._brush_last = (rx, ry)
                 self.update()
             else:
-                sx, sy = self.draw_start
-                # 椭圆：按住 Alt 约束正圆预览
+                # 预览始终用 overlay 逻辑坐标（QPainter 直接画在窗口上）
+                sx, sy = self._draw_start_logical or (x, y)
                 if self.tool == "ellipse" and alt_pressed(event):
-                    ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
-                    self._set_preview(l + min(ex0, ex1), t + min(ey0, ey1),
-                                      l + max(ex0, ex1), t + max(ey0, ey1))
+                    ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, x, y)
+                    self._set_preview(min(ex0, ex1), min(ey0, ey1),
+                                      max(ex0, ex1), max(ey0, ey1))
                 else:
-                    self._set_preview(sx + l, sy + t, rx + l, ry + t)
+                    self._set_preview(sx, sy, x, y)
         self._update_cursor(x, y)
 
     def mouseReleaseEvent(self, event):
@@ -1524,14 +1724,20 @@ class Selector(QWidget):
                 self._render_all()
                 self.update()
                 return
-            self._freeze_selection()
-            # _freeze_selection 里 hide → 截图 → show 会让 overlay 窗口重映射，
-            # 键盘焦点可能随之丢失（落到之前的应用）。
-            # 强制把焦点拉回 overlay，保证松开鼠标后直接可用键盘
-            # （Ctrl+Z / Esc / Enter 等）操作选区。
-            self._force_focus()
-            self._init_region_img()
-            self._render_all()
+            try:
+                self._freeze_selection()
+                # _freeze_selection 里 hide → 截图 → show 会让 overlay 窗口重映射，
+                # 键盘焦点可能随之丢失（落到之前的应用）。
+                # 强制把焦点拉回 overlay，保证松开鼠标后直接可用键盘
+                # （Ctrl+Z / Esc / Enter 等）操作选区。
+                self._force_focus()
+                self._init_region_img()
+                self._render_all()
+            except Exception as exc:
+                # 锁屏 / RDP 断开 / 显示器变化等导致截屏失败时，异常若穿透
+                # Qt 事件循环会直接结束进程，这里统一回退到 select 模式。
+                self._abort_capture(exc)
+                return
             self.update()
             return
         if self._region is None:
@@ -1550,10 +1756,10 @@ class Selector(QWidget):
             old_img = self._region_img
             old_region = moved_from
             if (old_img is not None and old_region is not None
-                    and old_img.size == (r - l, b - t)):
-                old_base = self.full_img.crop(old_region)
+                    and old_img.size == self._region_img_size(self._region)):
+                old_base = self._crop_region(old_region, self._region_scale)
                 if old_base.size == old_img.size:
-                    new_base = self.full_img.crop((l, t, r, b))
+                    new_base = self._crop_region(self._region, self._region_scale)
                     self._region_img = self._rebase_annotations(
                         old_img, old_base, new_base)
                     self.undo.map(
@@ -1570,14 +1776,14 @@ class Selector(QWidget):
             return
         if not self.drawing or self._region_img is None:
             self._preview = None
+            self._draw_start_logical = None
             self.update()
             return
         self.drawing = False
-        l, t, r, b = self._region
-        rx, ry = x - l, y - t
-        rx = max(0, min(rx, r - l - 1))
-        ry = max(0, min(ry, b - t - 1))
+        rx, ry = self._region_point(x, y)
         sx, sy = self.draw_start
+        self._draw_start_logical = None
+        s = self._region_scale
         self._preview = None
         if self.tool == "brush":
             # 画笔已在拖动中增量绘制；重置累计 patch 状态（下方统一整图转换）
@@ -1586,7 +1792,7 @@ class Selector(QWidget):
         elif self.tool == "rect":
             draw_rect(self._region_img,
                       [min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry)],
-                      self.color, self.width_attr)
+                      self.color, self.width_attr * s)
         elif self.tool == "ellipse":
             if abs(rx - sx) < 1 and abs(ry - sy) < 1:
                 self._refresh_region_pixmap()
@@ -1598,19 +1804,19 @@ class Selector(QWidget):
                 ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
             draw_ellipse(self._region_img,
                          [min(ex0, ex1), min(ey0, ey1), max(ex0, ex1), max(ey0, ey1)],
-                         self.color, self.width_attr)
+                         self.color, self.width_attr * s)
         elif self.tool == "arrow":
             if abs(rx - sx) < 1 and abs(ry - sy) < 1:
                 self._refresh_region_pixmap()
                 self.update()
                 return
             draw_arrow(self._region_img, (sx, sy), (rx, ry),
-                       self.color, self.width_attr)
+                       self.color, self.width_attr * s)
         elif self.tool == "mosaic":
             self._region_img = mosaic(
                 self._region_img,
                 min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry),
-                block=24)
+                block=24 * s)
         self._refresh_region_pixmap()
         self.update()
         # 标注完成后确保工具条保持在最前（topmost 标志已含在窗口标志中，
@@ -1699,7 +1905,8 @@ class Selector(QWidget):
         text = self._input_text_dialog(x, y)
         if text:
             self.undo.push(self._region_img.copy())
-            draw_text(self._region_img, (x, y), text, self.color, 16)
+            draw_text(self._region_img, (x, y), text, self.color,
+                      max(1, int(round(16 * self._region_scale))))
             self._render_all()
 
     def _input_text_dialog(self, x, y):
@@ -1770,24 +1977,26 @@ class Selector(QWidget):
     # ------------------------------------------------------------------ #
 
     def _ocr(self):
-        """识别选区图中文字，弹窗显示，可复制到剪贴板。"""
+        """识别选区图中文字，弹窗显示，可复制到剪贴板。
+
+        引擎懒加载（首次会读 OCR 模型）也放在工作线程：否则第一次点击
+        "识别文字"会在主线程阻塞数秒，与"识别期间界面不卡死"不符。
+        """
         if self._region_img is None:
-            return
-        engine = get_ocr_engine()
-        if engine is None:
-            QMessageBox.critical(
-                self, "识别失败",
-                "未安装 OCR 引擎。\n请执行：pip install rapidocr\n"
-                "（或：pip install rapidocr-onnxruntime）")
             return
 
         img = self._region_img.copy()
 
         def run():
             try:
+                engine = get_ocr_engine()
+                if engine is None:
+                    self._ocr_failed.emit(
+                        "未安装 OCR 引擎。\n请执行：pip install rapidocr\n"
+                        "（或：pip install rapidocr-onnxruntime）")
+                    return
                 import numpy as np
-                arr = np.array(img.convert("RGB"))
-                result = engine(arr)
+                result = engine(np.array(img.convert("RGB")))
             except Exception as e:
                 self._ocr_failed.emit(str(e))
                 return

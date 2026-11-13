@@ -4,8 +4,8 @@ import pytest
 from PIL import Image
 from capture import (
     capture_fullscreen, capture_region, capture_virtual_screen_size,
-    _build_dib, copy_text_to_clipboard, get_desktop_path, default_save_path,
-    save_image,
+    _build_dib, copy_text_to_clipboard, copy_to_clipboard, get_desktop_path,
+    default_save_path, save_image,
 )
 
 
@@ -86,6 +86,25 @@ def test_copy_text_to_clipboard_returns_false_on_error():
     from unittest.mock import patch
     with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")):
         assert copy_text_to_clipboard("x") is False
+
+
+def test_copy_to_clipboard_sets_only_dib():
+    """图像剪贴板只写 CF_DIB：CF_BITMAP 由 Windows 从 CF_DIB 合成。
+
+    回归：曾把 DIB 字节直接写入 CF_BITMAP，得到无效位图句柄，优先读取
+    CF_BITMAP 的应用（部分 Office/聊天工具）会粘贴失败。
+    """
+    from unittest.mock import patch
+    import win32con
+
+    with patch("win32clipboard.OpenClipboard"), \
+         patch("win32clipboard.EmptyClipboard"), \
+         patch("win32clipboard.SetClipboardData") as scd, \
+         patch("win32clipboard.CloseClipboard"):
+        copy_to_clipboard(Image.new("RGB", (2, 2), (255, 0, 0)))
+
+    formats = [c.args[0] for c in scd.call_args_list]
+    assert formats == [win32con.CF_DIB]
 
 
 def test_get_desktop_path_from_shell32(monkeypatch):

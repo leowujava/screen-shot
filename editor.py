@@ -95,17 +95,17 @@ class EditorWindow(QMainWindow):
     def ocr(self):
         """识别图中文字（工作线程执行，避免 OCR 期间界面卡死）。
 
+        引擎懒加载（首次会读 OCR 模型）也在工作线程执行。
         结果通过跨线程信号排队回主线程弹窗，与选区工具行为一致。
         """
-        engine = get_ocr_engine()
-        if engine is None:
-            QMessageBox.critical(self, "识别失败", "未安装 OCR 引擎。")
-            return
-
         img = self.image.copy()
 
         def run():
             try:
+                engine = get_ocr_engine()
+                if engine is None:
+                    self._ocr_failed.emit("未安装 OCR 引擎。")
+                    return
                 import numpy as np
                 result = engine(np.array(img.convert("RGB")))
                 self._ocr_text_ready.emit(ocr_result_to_text(result))

@@ -96,8 +96,12 @@ def _build_dib(img):
 def copy_to_clipboard(img):
     """把图像复制到系统剪贴板（32 位 DIB，可直接 Ctrl+V 粘贴）。
 
-    手工构造 DIB 字节串后交给 win32clipboard 以 CF_BITMAP / CF_DIB 写入剪贴板，
+    手工构造 DIB 字节串后交给 win32clipboard 以 CF_DIB 写入剪贴板，
     由 pywin32 负责剪贴板内存的生命周期，兼容 Word / Paint / 浏览器等。
+
+    只写 CF_DIB：Windows 会在应用请求 CF_BITMAP 时由 CF_DIB 合成
+    合法的 HBITMAP。此前同时把 DIB 字节写入 CF_BITMAP，拿到的是无效
+    位图句柄，部分优先读取 CF_BITMAP 的应用会粘贴失败。
     """
     import win32clipboard
     import win32con
@@ -107,7 +111,6 @@ def copy_to_clipboard(img):
     win32clipboard.OpenClipboard()
     try:
         win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_BITMAP, dib)
         win32clipboard.SetClipboardData(win32con.CF_DIB, dib)
     finally:
         win32clipboard.CloseClipboard()

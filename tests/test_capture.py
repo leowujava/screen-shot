@@ -5,7 +5,7 @@ from PIL import Image
 from src.core.capture import (
     capture_fullscreen, capture_region, capture_virtual_screen_size,
     _build_dib, copy_text_to_clipboard, copy_to_clipboard, get_desktop_path,
-    default_save_path, save_image,
+    default_save_path, save_image, save_image_as,
 )
 
 
@@ -172,6 +172,30 @@ def test_save_image_avoids_overwrite(tmp_path):
     # 无冲突时直接保存原路径
     p3 = save_image(img, str(tmp_path / "free.png"))
     assert p3 == str(tmp_path / "free.png")
+
+
+def test_save_image_as_overwrites_chosen_path(tmp_path):
+    """用户在"另存为"对话框明确选中已有文件（已确认覆盖）：写确切路径，不加后缀。"""
+    img = Image.new("RGB", (2, 2), (255, 0, 0))
+    path = tmp_path / "chosen.png"
+    path.write_bytes(b"ORIGINAL")
+    p = save_image_as(img, str(path))
+    assert p == str(path)
+    assert Image.open(p).getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_save_image_as_failure_leaves_no_empty_file(tmp_path, monkeypatch):
+    """写入新文件失败：清理占位文件，异常照常抛出。"""
+    img = Image.new("RGB", (2, 2))
+    path = str(tmp_path / "bad.png")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(img, "save", boom)
+    with pytest.raises(OSError, match="disk full"):
+        save_image_as(img, path)
+    assert not os.path.exists(path)
 
 
 def test_save_image_concurrent_no_overwrite(tmp_path):

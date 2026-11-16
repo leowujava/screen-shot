@@ -42,6 +42,23 @@ def test_pil_to_qimage_owns_pixel_buffer(qt_app):
     assert (c.red(), c.green(), c.blue()) == (123, 45, 67)
 
 
+def test_editor_save_dialog_defaults_to_config_dir(qt_app):
+    """编辑器"另存为"默认路径跟随 default_save_path（配置 save_dir 或桌面 + 时间戳）。"""
+    from unittest.mock import patch
+    from src.tools import editor
+
+    ed = EditorWindow(Image.new("RGB", (10, 10)))
+    try:
+        with patch.object(editor, "default_save_path",
+                          return_value="D:\\shots\\截图_t.png"), \
+             patch.object(editor.QFileDialog, "getSaveFileName",
+                          return_value=("", "")) as dlg:
+            ed.save_image()
+        assert dlg.call_args.args[2] == "D:\\shots\\截图_t.png"
+    finally:
+        ed.close()
+
+
 def test_ocr_reexported_from_drawing():
     """editor 的 OCR 逻辑必须来自 drawing 的唯一实现（去重）。"""
     from src.tools import editor

@@ -78,6 +78,25 @@ def save_image(img, path=None):
         return candidate
 
 
+def save_image_as(img, path):
+    """保存到用户指定的确切路径（"另存为"对话框已确认覆盖），返回 path。失败抛异常。
+
+    与 save_image 的自动命名（同名追加 _1/_2 防覆盖）不同：用户在对话框里
+    明确选中了该文件，直接写入。写入新文件失败时 best-effort 清理，不留空文件。
+    """
+    existed = os.path.exists(path)
+    try:
+        img.save(path)
+    except Exception:
+        if not existed:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+    return path
+
+
 def _build_dib(img):
     """把 PIL Image 编码为 32 位 BGRA、bottom-up 的 DIB 字节串（BITMAPINFOHEADER + 像素）。
 

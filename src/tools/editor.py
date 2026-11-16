@@ -1,11 +1,10 @@
 import threading
-from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFileDialog, QLabel, QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from ..core.capture import copy_to_clipboard
+from ..core.capture import copy_to_clipboard, default_save_path
 from ..core.drawing import get_ocr_engine, ocr_result_to_text
 
 
@@ -75,7 +74,7 @@ class EditorWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "保存截图",
-            f"截图_{datetime.now():%Y%m%d_%H%M%S}.png",
+            default_save_path(),
             "PNG Files (*.png);;JPEG Files (*.jpg *.jpeg)",
         )
         if not path:

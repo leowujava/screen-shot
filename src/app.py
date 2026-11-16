@@ -7,14 +7,16 @@ import pynput.keyboard as kb
 import pystray
 
 from PySide6.QtCore import QObject, QThread, Signal
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from .core.applog import get_logger
 from .core.capture import (
     capture_fullscreen,
     capture_virtual_screen_size,
     copy_to_clipboard,
+    default_save_path,
     save_image,
+    save_image_as,
 )
 from .core.config import DEFAULT_HOTKEYS, get_config
 from .ui.selector import Selector
@@ -80,18 +82,20 @@ def _report_error(title, exc):
     _run_on_main(_show_error)
 
 
-def process_fullscreen_capture(img):
+def process_fullscreen_capture(img, path=None):
     """全屏截图 → 保存并复制到剪贴板，返回保存路径（保存失败时为 None）。
 
+    path 为用户在"另存为"对话框选择的路径（写确切路径，覆盖已由对话框确认）；
+    为 None 时走 save_image 自动命名（配置 save_dir 或桌面 + 时间戳，同名自动后缀）。
     保存失败只弹提示、不阻断后续剪贴板复制（用户仍可 Ctrl+V 粘贴），不静默吞掉。
     """
-    path = None
+    saved = None
     try:
-        path = save_image(img, None)
+        saved = save_image_as(img, path) if path else save_image(img, None)
     except Exception as e:
         _report_error("保存失败", e)
     _safe_copy_to_clipboard(img)
-    return path
+    return saved
 
 
 def _safe_copy_to_clipboard(img):
@@ -102,12 +106,36 @@ def _safe_copy_to_clipboard(img):
         _report_error("复制失败", e)
 
 
-def _safe_save(img):
-    """保存截图到桌面；失败时弹出提示而不是崩溃或静默吞掉。"""
+def _safe_save_as(img, path):
+    """保存截图到用户指定路径；失败时弹出提示而不是崩溃或静默吞掉。"""
     try:
-        save_image(img, None)
+        save_image_as(img, path)
     except Exception as e:
         _report_error("保存失败", e)
+
+
+# 上一次"另存为"选中的目录：下次对话框默认打开这里（文件名仍按时间戳生成）
+_last_save_dir = None
+
+
+def _ask_save_path():
+    """弹"另存为"对话框选择保存路径；取消返回 None。必须在主线程调用。
+
+    默认目录为上一次选中的目录（首次取配置 save_dir 或桌面），
+    默认文件名 截图_时间戳.png。无 QApplication（纯逻辑单测）时
+    不弹对话框，直接返回默认路径。
+    """
+    global _last_save_dir
+    default = default_save_path()
+    if _last_save_dir:
+        default = os.path.join(_last_save_dir, os.path.basename(default))
+    if QApplication.instance() is None:
+        return default
+    path, _ = QFileDialog.getSaveFileName(None, "保存截图", default, "PNG 图片 (*.png)")
+    if not path:
+        return None
+    _last_save_dir = os.path.dirname(path)
+    return path
 
 
 def process_region_selection(region, annotated_img):
@@ -139,15 +167,19 @@ def _on_copy(region, annotated_img):
 def _on_save(region, annotated_img):
     """选区"保存"回调：region 为 None（取消）时不做任何事。
 
-    PNG 编码是 CPU 密集操作：放到工作线程执行，避免大选区（数秒级）
-    卡住主线程事件循环；失败弹提示（_safe_save），不再让异常沿
+    先在主线程弹"另存为"对话框选择路径（取消则不保存）；PNG 编码是
+    CPU 密集操作：放到工作线程执行，避免大选区（数秒级）卡住主线程
+    事件循环；失败弹提示（_safe_save_as），不再让异常沿
     _exit → _finish 传播到 Qt 事件循环导致整个应用崩溃。
     """
     if region is None:
         return
+    path = _ask_save_path()
+    if path is None:
+        return
 
     def worker():
-        _safe_save(annotated_img)
+        _safe_save_as(annotated_img, path)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -196,10 +228,29 @@ def do_region_capture():
 
 
 def do_fullscreen_capture():
-    """全屏截图直接保存（并复制到剪贴板）。耗时操作在工作线程执行。"""
+    """全屏截图：弹"另存为"对话框选择保存路径后保存（并复制到剪贴板）。
+
+    截屏在工作线程执行；对话框调度回主线程弹出（Qt 要求所有窗口操作
+    在 GUI 线程进行）；编码保存再回工作线程。取消对话框则不保存，
+    但仍复制到剪贴板。
+    """
     def worker():
         full = capture_fullscreen()
-        process_fullscreen_capture(full)
+        _run_on_main(lambda: _show_fullscreen_save_dialog(full))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def _show_fullscreen_save_dialog(full):
+    """主线程：弹"另存为"对话框，随后在工作线程保存 + 复制（取消 → 只复制）。"""
+    path = _ask_save_path()
+
+    def worker():
+        if path is None:
+            _safe_copy_to_clipboard(full)
+        else:
+            process_fullscreen_capture(full, path)
+
     threading.Thread(target=worker, daemon=True).start()
 
 

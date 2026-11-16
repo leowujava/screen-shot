@@ -25,24 +25,26 @@ screen-shot/
 ├── app.py                  # 薄入口（兼容 python app.py / PyInstaller）
 ├── src/                    # 源码包
 │   ├── app.py              # 主入口：托盘 / 全局热键 / Qt 事件循环 / 单实例
+│   ├── __main__.py         # 支持 python -m src
 │   ├── core/               # 核心逻辑（无 Qt 依赖）
 │   │   ├── capture.py      # 截屏、保存、剪贴板
 │   │   ├── config.py       # 用户配置读取
 │   │   ├── applog.py       # 滚动文件日志
 │   │   ├── drawing.py      # 标注绘制与 OCR
 │   │   └── screenmap.py    # 多显示器 / 高 DPI 坐标映射
-│   └── ui/                 # Qt 界面
-│       ├── selector.py     # 选区窗口门面（组合下面三个 Mixin）
-│       ├── selector_region.py  # 选区几何 / 裁剪 / 撤销预算
-│       ├── selector_toolbar.py # 工具条构建与交互
-│       ├── selector_mouse.py   # 鼠标状态机 / 标注绘制
-│       ├── theme.py        # 主题常量与色板
-│       ├── tb_icons.py     # 工具条图标绘制
-│       ├── widgets.py      # 工具条 / OCR 结果弹窗
-│       └── qtutil.py       # Qt 通用工具
-├── tools/editor.py         # 独立编辑器窗口（主流程不自动打开）
+│   ├── ui/                 # Qt 界面
+│   │   ├── selector.py     # 选区窗口门面（组合下面三个 Mixin）
+│   │   ├── selector_region.py  # 选区几何 / 裁剪 / 撤销预算
+│   │   ├── selector_toolbar.py # 工具条构建与交互
+│   │   ├── selector_mouse.py   # 鼠标状态机 / 标注绘制
+│   │   ├── theme.py        # 主题常量与色板
+│   │   ├── tb_icons.py     # 工具条图标绘制
+│   │   ├── widgets.py      # 工具条 / OCR 结果弹窗
+│   │   └── qtutil.py       # Qt 通用工具
+│   └── tools/editor.py     # 独立编辑器窗口（主流程不自动打开）
 ├── tests/                  # pytest 测试与手动脚本
 ├── docs/                   # 设计与计划文档
+├── requirements.txt        # 依赖清单
 ├── pyproject.toml          # pytest 配置（pythonpath 指向项目根）
 └── screen-shot.spec        # PyInstaller 打包脚本
 ```
@@ -99,13 +101,13 @@ screen-shot/
 | 工具条"✓ 确认" | 确认（复制到剪贴板） |
 | 工具条"✕ 取消" | 取消 |
 
-> `tools/editor.py` 保留了一个独立的 PySide6 编辑器窗口（保存 / 复制 / OCR），
+> `src/tools` 保留了一个独立的 PySide6 编辑器窗口（保存 / 复制 / OCR），
 > 供手动测试（`tests/manual_editor.py`）与后续复用，主流程不会自动打开。
 
 ## 识别文字（OCR）
 
 - 选区工具条"识别文字"按钮：识别选区内文字，弹窗显示（按阅读顺序排列），可"复制选中 / 复制全部"到剪贴板
-- 独立编辑器（`tools/editor.py`）的"识别文字"按钮行为一致
+- 独立编辑器（`src/tools`）的"识别文字"按钮行为一致
 - OCR 在工作线程执行，识别期间界面不卡死
 - 支持中英文混合识别（基于 `rapidocr` / PP-OCRv6，已加入 requirements.txt），无需安装 Tesseract
 

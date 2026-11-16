@@ -3,3 +3,6 @@
 editor：独立截屏编辑器窗口（保存 / 复制 / OCR），主流程不自动打开，
 手动测试见 tests/manual_editor.py。
 """
+from .editor import EditorWindow
+
+__all__ = ["EditorWindow"]

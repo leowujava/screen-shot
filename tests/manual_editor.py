@@ -7,7 +7,7 @@ from PIL import Image
 
 from PySide6.QtWidgets import QApplication
 
-from tools.editor import EditorWindow
+from src.tools import EditorWindow
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

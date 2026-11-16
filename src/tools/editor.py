@@ -5,8 +5,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QFileDialog, QLabel, QHBoxLayout, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from src.core.capture import copy_to_clipboard
-from src.core.drawing import get_ocr_engine, ocr_result_to_text
+from ..core.capture import copy_to_clipboard
+from ..core.drawing import get_ocr_engine, ocr_result_to_text
 
 
 class EditorWindow(QMainWindow):

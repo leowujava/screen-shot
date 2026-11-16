@@ -1,6 +1,6 @@
 from PIL import Image
 
-from tools.editor import EditorWindow
+from src.tools import EditorWindow
 
 
 def test_editor_window_smoke(qt_app):
@@ -44,7 +44,7 @@ def test_pil_to_qimage_owns_pixel_buffer(qt_app):
 
 def test_ocr_reexported_from_drawing():
     """editor 的 OCR 逻辑必须来自 drawing 的唯一实现（去重）。"""
-    from tools import editor
+    from src.tools import editor
     from src.core import drawing
     assert editor.ocr_result_to_text is drawing.ocr_result_to_text
 
@@ -57,7 +57,7 @@ def test_editor_ocr_runs_in_worker_thread(qt_app):
     import threading
     import time
     from unittest.mock import MagicMock, patch
-    from tools import editor
+    from src.tools import editor
 
     eng_thread = []
 

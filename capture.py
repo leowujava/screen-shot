@@ -4,6 +4,8 @@ from datetime import datetime
 from PIL import Image
 import mss
 
+from config import get_config
+
 
 def capture_virtual_screen_size():
     """返回虚拟桌面（所有显示器合并）的 (width, height)。"""
@@ -40,10 +42,10 @@ def get_desktop_path():
 
 
 def default_save_path():
-    """默认保存路径：桌面/截图_时间戳.png"""
-    desktop = get_desktop_path()
+    """默认保存路径：配置 save_dir（留空 = 桌面）/截图_时间戳.png"""
+    directory = get_config()["save_dir"] or get_desktop_path()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(desktop, f"截图_{ts}.png")
+    return os.path.join(directory, f"截图_{ts}.png")
 
 
 def save_image(img, path=None):

@@ -3,7 +3,12 @@
 合并选区 + 标注：拖拽框选 → 完整工具条 → 画完框直接标注 → 确认/复制/保存/取消。
 
 模块拆分：配色常量见 theme.py，工具条矢量图标见 tb_icons.py，
-工具条窗口 / OCR 弹窗见 widgets.py；本文件只保留选区状态机与渲染。
+工具条窗口 / OCR 弹窗见 widgets.py，Qt 通用小工具见 qtutil.py；
+ToolbarMixin（selector_toolbar.py）/ MouseMixin（selector_mouse.py）/
+RegionMixin（selector_region.py）通过多重继承组合进 Selector。
+本文件保留选区状态机核心：初始化 / 窗口 / 渲染 / 键盘 / 文字输入 /
+撤销 / OCR / 确认动作。子模块均不反向依赖 selector；本文件重导出
+拆出的名字，保持 `import selector` 的既有接口（测试/手动脚本直接引用）。
 
 窗口模型：
 - overlay：无边框置顶窗口，覆盖整个虚拟桌面（所有屏幕）。
@@ -19,53 +24,41 @@
 都在 overlay 的 paintEvent 中由 QPainter 一次绘制，状态（self._region 等）
 是唯一事实来源，重绘是纯函数式的，无需管理画布元素生命周期。
 """
-import ctypes
-import sys
 import threading
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image
 
-from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
     QPolygonF,
     QFont,
     QFontMetrics,
-    QGuiApplication,
-    QImage,
     QPainter,
     QPen,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QColorDialog,
     QDialog,
-    QFrame,
-    QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPushButton,
-    QSpinBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
 from applog import get_logger
+from config import get_config
 from drawing import (
-    arrow_geometry, draw_arrow, draw_rect, draw_ellipse, draw_brush,
-    draw_text, mosaic, UndoStack, get_ocr_engine, ocr_result_to_text,
-    alt_pressed,
+    UndoStack, arrow_geometry, draw_text, get_ocr_engine, ocr_result_to_text,
 )
 from screenmap import build_mappings, qt_virtual_origin
 
 from theme import (
     BORDER_INNER, BORDER_OUTLINE, CROSSHAIR_COLOR, CROSSHAIR_WIDTH,
     DIM_WINDOW_OPACITY, FULL_WINDOW_OPACITY, LABEL_BG, LABEL_FG,
-    MASK_ALPHA, PALETTE, TB_ACTIVE, TB_BG, TB_CANCEL_FG, TB_CONFIRM_FG,
-    TB_DISABLED, TB_FG, TB_HOVER, TB_SEP,
+    MASK_ALPHA, PALETTE,
 )
 # 图标与辅助窗口拆到独立模块；这里再导出全部名字，
 # 保持 `import selector` 的既有接口（测试/手动脚本直接引用）。
@@ -78,78 +71,19 @@ from tb_icons import (
     _paint_icon_text, _paint_icon_undo,
 )
 from widgets import _OcrResultDialog, _Toolbar
-
-# 标注层二值化 LUT（0 → 0，其余 → 255）。
-# .point() 传 LUT 走 C 级查表，替代逐像素 Python lambda
-# （选区移动重定基时对整张选区图执行，lambda 版百万像素级耗时）。
-_THRESHOLD_LUT = (0,) + (255,) * 255
-
-# 撤销快照内存预算：每份快照 ≈ 选区宽 × 高 × 3 字节（RGB），
-# 快照总数按选区尺寸动态计算（见 Selector._undo_maxlen_for）。
-# 固定 50 份对小选区足够"撤销回干净底图"，但 4K 选区（≈24.9MB/份）
-# 50 份会逼近 1.3GB；按预算折算后 4K ≈ 10 份、1080p ≈ 43 份，
-# 撤销内存始终有界，小选区体验不变。
-_UNDO_MEMORY_BUDGET = 256 * 1024 * 1024
-_UNDO_MAXLEN = 50
-_UNDO_MINLEN = 5
+# Qt 通用工具 / 选区几何 / 撤销预算常量拆到独立模块；重导出保持门面接口。
+# 注意：_virtual_screen_size / _pil_to_qpixmap 的调用点必须留在本文件
+# （测试 monkeypatch selector 模块名字来拦截/统计调用）。
+from qtutil import _event_pos, _pil_to_qpixmap, _virtual_screen_size
+from selector_region import (
+    RegionMixin, _THRESHOLD_LUT, _UNDO_MEMORY_BUDGET, _UNDO_MAXLEN,
+    _UNDO_MINLEN,
+)
+from selector_toolbar import ToolbarMixin
+from selector_mouse import MouseMixin
 
 
-def _virtual_screen_size():
-    """返回虚拟桌面（所有显示器合并）的 (width, height)。失败返回 (0, 0)。"""
-    app = QGuiApplication.instance()
-    if app is not None:
-        try:
-            g = app.primaryScreen().virtualGeometry()
-            if g.width() > 0 and g.height() > 0:
-                return g.width(), g.height()
-        except Exception:
-            pass
-    if sys.platform == "win32":
-        try:
-            user32 = ctypes.windll.user32
-            w = user32.GetSystemMetrics(78)
-            h = user32.GetSystemMetrics(79)
-            if w > 0 and h > 0:
-                return w, h
-        except Exception:
-            pass
-    return 0, 0
-
-
-def _pil_to_qpixmap(img):
-    """PIL Image → QPixmap（不拷贝 img，转换一次缓存使用）。
-
-    不透明图（定格截图/选区图均为 RGB）直接输出 BGRX 字节串 +
-    Format_RGB32：省去一次整图 convert("RGBA") 拷贝 + 一次整图通道
-    转换（约 选区尺寸 × 4 字节），标注/撤销/换色/画笔整图补齐等
-    路径的每次转换都更便宜。Format_RGB32 为 Windows 原生格式，
-    上传不做字节交换，且 Qt 按不透明处理，与旧 RGBA8888 渲染一致。
-    """
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    data = img.tobytes("raw", "BGRX")
-    # QImage 不拷贝 data 缓冲，但 fromImage 立即深拷贝为 QPixmap，
-    # 返回时像素已归 Qt 所有——不要改成返回 QImage（会悬垂）。
-    return QPixmap.fromImage(QImage(data, img.width, img.height,
-                                    QImage.Format_RGB32))
-
-
-def _event_pos(event):
-    """取鼠标事件的 widget 坐标 (x, y)。
-
-    兼容真实 QMouseEvent（position()）与测试里只带 .x/.y 的自定义 Event。
-    """
-    pos = getattr(event, "position", None)
-    if callable(pos):
-        try:
-            p = pos()
-            return int(p.x()), int(p.y())
-        except Exception:
-            pass
-    return int(event.x), int(event.y)
-
-
-class Selector(QWidget):
+class Selector(ToolbarMixin, MouseMixin, RegionMixin, QWidget):
     """合并选区 + 标注：拖拽框选 → 完整工具条 → 画完框直接标注 → 确认/复制/保存/取消。
 
     内部两个模式：
@@ -243,10 +177,11 @@ class Selector(QWidget):
         self._pending_callback = None
         self._ocr_busy = False  # OCR 进行中：忽略连点，避免叠开多个结果弹窗
 
-        # 标注状态（默认颜色 = 色板第一色，与截图中箭头红色一致）
+        # 标注状态（默认颜色/线宽来自用户配置，缺省 = 色板第一色红色 / 3）
         self.tool = "move"
-        self.color = PALETTE[0]
-        self.width_attr = 3
+        cfg = get_config()
+        self.color = cfg["color"]
+        self.width_attr = cfg["width"]
         # 撤销深度上限：每笔标注都保存一份选区图副本。上限过低（如 10）时，
         # 画满上限后最旧快照被挤出，撤销到栈空也回不到干净底图（"撤销没干净"）。
         # 初始 50 笔；选区 crop 后按尺寸动态调整（_init_region_img →
@@ -378,280 +313,6 @@ class Selector(QWidget):
             if self._tb_visible and self.tb_win is not None and self.tb_win.isVisible():
                 self.tb_win.raise_()
         return super().eventFilter(obj, event)
-
-    # ------------------------------------------------------------------ #
-    # 工具条
-    # ------------------------------------------------------------------ #
-
-    def _build_toolbar(self):
-        # 必须是独立顶层窗口（parent=None）：作为 overlay 的子窗口时，
-        # Windows 会按父窗口坐标系摆放并裁剪，导致跟随定位错位。
-        # self 持有引用，不会被提前 GC。传 self 使工具条可响应
-        # Esc/Enter/Ctrl+Z（见 _Toolbar.keyPressEvent）。
-        self.tb_win = _Toolbar(self)
-        self.tb_win.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.tb_win.setFont(QFont("Microsoft YaHei UI", 10))
-        self.tb_win.setStyleSheet(
-            f"QWidget {{ background: {TB_BG}; }}"
-            f"QToolButton {{ background: transparent; border: none; "
-            f"color: {TB_FG}; font-size: 12px; padding: 2px 6px; }}"
-            f"QToolButton:hover {{ background: {TB_HOVER}; }}"
-            f"QToolButton:disabled {{ color: {TB_DISABLED}; }}"
-            f"QSpinBox {{ border: 1px solid {TB_SEP}; background: {TB_BG}; "
-            f"color: {TB_FG}; font-size: 10px; padding: 0 2px; }}"
-        )
-
-        outer = QVBoxLayout(self.tb_win)
-        outer.setContentsMargins(4, 3, 4, 3)
-        outer.setSpacing(0)
-
-        bar = QHBoxLayout()
-        bar.setSpacing(1)
-        outer.addLayout(bar)
-
-        # 工具按钮（矢量图标 + hover 浅灰 + 选中蓝色 / 禁用灰色，见 _refresh_tool_icons）
-        for tool in self.TOOLS:
-            b = QToolButton(self.tb_win)
-            b.setToolTip(self.TOOL_LABELS[tool])
-            b.setFixedSize(28, 24)
-            b.setIcon(_tb_icon(TOOL_ICON_FNS[tool], color=TB_FG))
-            b.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
-            b.setToolButtonStyle(Qt.ToolButtonIconOnly)
-            b.setStyleSheet(
-                f"QToolButton {{ background: transparent; border: none; padding: 0px; }}"
-                f"QToolButton:hover {{ background: {TB_HOVER}; }}")
-            b.clicked.connect(lambda _checked=False, t=tool: self._select_tool(t))
-            bar.addWidget(b)
-            self._tool_btns[tool] = b
-
-        bar.addWidget(self._tb_sep())
-
-        # 颜色（单击弹出预设色板，双击打开系统取色器；矢量调色板图标）
-        self._tb_icon_btn(bar, "color", _paint_icon_color,
-                          "颜色（单击：预设色板；双击：取色器）",
-                          self._on_color_clicked)
-        self._color_click_timer = None  # 单击/双击判定用（QToolButton 无 doubleClicked 信号）
-
-        # 粗细
-        self._spin = QSpinBox(self.tb_win)
-        self._spin.setRange(1, 30)
-        self._spin.setValue(self.width_attr)
-        self._spin.setFixedWidth(56)
-        self._spin.editingFinished.connect(self._on_width_change)
-        bar.addWidget(self._spin)
-
-        # 撤销
-        self._tb_icon_btn(bar, "undo", _paint_icon_undo, "撤销", self._undo)
-
-        bar.addWidget(self._tb_sep())
-
-        # 识别文字（矢量图标：文本行 + 放大镜，替代模糊的 🔍 emoji）
-        self._tb_icon_btn(bar, "ocr", _paint_icon_ocr, "识别文字", self._ocr)
-
-        bar.addWidget(self._tb_sep())
-
-        # 尾部动作（顺序对齐参考设计）：复制 / 保存(下载) / 取消(红 X) / 确认(绿 ✓)
-        self._tb_icon_btn(bar, "copy", _paint_icon_copy, "复制", self._copy)
-        self._tb_icon_btn(bar, "save", _paint_icon_save, "保存", self._save)
-        self._tb_icon_btn(bar, "cancel", _paint_icon_cancel, "取消", self._cancel,
-                          color=TB_CANCEL_FG)
-        self._tb_icon_btn(bar, "confirm", _paint_icon_confirm, "确认", self._confirm,
-                          color=TB_CONFIRM_FG)
-
-        # 预设色板行（默认收起，点 🎨 弹出）
-        self._color_row = QWidget(self.tb_win)
-        row = QHBoxLayout(self._color_row)
-        row.setContentsMargins(2, 0, 2, 0)
-        row.setSpacing(4)
-        for c in PALETTE:
-            b = QToolButton(self._color_row)
-            b.setFixedSize(16, 16)
-            b.setStyleSheet(self._swatch_style(c, selected=False))
-            b.clicked.connect(lambda _checked=False, col=c: self._set_color(col))
-            row.addWidget(b)
-            self._color_btns[c] = b
-        self._color_row.setVisible(False)
-        outer.addWidget(self._color_row)
-
-    def _swatch_style(self, color, selected):
-        border = f"2px solid {TB_ACTIVE}" if selected else "1px solid #c9cdd4"
-        return f"QToolButton {{ background: {color}; border: {border}; }}"
-
-    def _tb_sep(self, bar=None):
-        f = QFrame(self.tb_win)
-        f.setFrameShape(QFrame.VLine)
-        f.setFixedHeight(18)
-        f.setStyleSheet(f"background: {TB_SEP}; color: {TB_SEP};")
-        if bar is not None:
-            bar.addWidget(f)
-        return f
-
-    def _tb_icon_btn(self, bar, key, paint_fn, tip, command, color=TB_FG):
-        """工具条矢量图标按钮。
-
-        独立于文字按钮：用 QPainter 高倍绘制图标（见 _tb_icon），不依赖
-        emoji/特殊字体渲染，任意 DPI 下都清晰。padding 置零避免工具条全局
-        样式（2px 6px）把图标裁掉。color 指定线稿颜色（确认绿/取消红等）。
-        """
-        b = QToolButton(self.tb_win)
-        b.setFixedSize(28, 24)
-        b.setToolTip(tip)
-        b.setIcon(_tb_icon(paint_fn, color=color))
-        b.setIconSize(QSize(TB_ICON_SIZE, TB_ICON_SIZE))
-        b.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        b.setStyleSheet(
-            f"QToolButton {{ background: transparent; border: none; padding: 0px; }}"
-            f"QToolButton:hover {{ background: {TB_HOVER}; }}")
-        b.clicked.connect(command)
-        bar.addWidget(b)
-        self._tb_btns[key] = b
-        return b
-
-    def _measure_toolbar(self):
-        """测量工具条实际尺寸（颜色行弹出/收起会改变窗口尺寸）。
-
-        只在首次显示或行状态变化时调用，避免每帧拖动都触发同步布局计算
-        （拖动性能回归测试的根因）。
-        """
-        self.tb_win.adjustSize()
-        self._tb_size = (self.tb_win.width(), self.tb_win.height())
-
-    def _on_color_clicked(self):
-        """颜色按钮点击：单击（300ms 内无第二次点击）弹出预设色板，
-        双击直接打开系统取色器。"""
-        if self._color_click_timer is None:
-            self._color_click_timer = QTimer(self.tb_win)
-            self._color_click_timer.setSingleShot(True)
-            self._color_click_timer.setInterval(300)
-            self._color_click_timer.timeout.connect(self._on_color_single_click)
-            self._color_click_timer.start()
-        else:
-            self._color_click_timer.stop()
-            self._color_click_timer = None
-            self._pick_color()
-
-    def _on_color_single_click(self):
-        """单击超时：复位计时器句柄后再弹板。
-
-        必须复位：否则下一次单击会看到残留的 timer 句柄，被误判成
-        "双击"，直接打开系统取色器，预设色板再也弹不出来。
-        """
-        self._color_click_timer = None
-        self._toggle_color_row()
-
-    def _toggle_color_row(self):
-        """在工具条内弹出/收起预设色板行（仿工具条截图）。"""
-        self._color_row.setVisible(not self._color_row.isVisible())
-        self._update_color_row()
-        # 行状态变化 → 重新测量并（若可见）重新定位
-        if self._tb_visible and self._tb_region is not None:
-            self._tb_show(self._tb_region, (self._tb_region[0], self._tb_region[1],
-                                            self._tb_region[2] - self._tb_region[0],
-                                            self._tb_region[3] - self._tb_region[1]))
-        elif self.tb_win.isVisible():
-            self._measure_toolbar()
-
-    def _close_color_row(self):
-        if self._color_row is not None:
-            self._color_row.setVisible(False)
-
-    def _set_color(self, color):
-        self.color = color
-        self._update_color_row()
-        # 颜色变化后重渲染当前标注（线条/文字颜色即时生效）
-        if self._region_img is not None and self._mode == "adjust":
-            self._render_all()
-
-    def _update_color_row(self):
-        """给当前选中颜色的色块加蓝圈高亮。"""
-        for c, b in self._color_btns.items():
-            b.setStyleSheet(
-                self._swatch_style(c, selected=(c.lower() == self.color.lower())))
-
-    def _tb_show(self, pos, size):
-        """定位/显示工具条。pos = (l, t, r, b)，size = (l, t, w, h)。
-
-        首次显示：先（隐藏状态下）测量尺寸，再直接以最终几何 show，
-        避免窗口在默认位置以空内容闪现一帧（白底闪烁）。
-        后续帧：只 setGeometry 移动，不重新布局。
-        """
-        self._tb_region = (pos[0], pos[1], pos[2], pos[3])
-        tb = self.tb_win
-        if not self._tb_visible:
-            self._measure_toolbar()
-            tb.show()
-            self._tb_visible = True
-        row_state = 1 if self._color_row.isVisible() else 0
-        if self._tb_row_state != row_state:
-            self._measure_toolbar()
-            self._tb_row_state = row_state
-        x, y = pos[0], pos[1]
-        h = size[3]
-        tb_w, tb_h = self._tb_size
-        W, H = self._actual_w, self._actual_h
-        ty = y + h + 4
-        if ty + tb_h > H:
-            ty = y - tb_h - 4
-        ty = max(0, min(ty, H - tb_h))
-        tx = max(0, min(x, W - tb_w)) if tb_w else x
-        screen_x = self._logical_origin_x + tx
-        screen_y = self._logical_origin_y + ty
-        tb.setGeometry(screen_x, screen_y, tb_w, tb_h)
-        # 缓存工具条屏幕位置（供 _is_over_toolbar 使用，避免每帧查询窗口几何）
-        self._tb_pos = (screen_x, screen_y, tb_w, tb_h)
-
-    def _tb_hide(self):
-        self._tb_visible = False
-        self._tb_size = None
-        self._tb_row_state = 0
-        self._tb_pos = None
-        self._close_color_row()
-        if self.tb_win is not None:
-            try:
-                self.tb_win.hide()
-            except Exception:
-                pass
-
-    def _is_over_toolbar(self, cx, cy):
-        """判断 canvas 坐标 (cx, cy) 是否落在工具条窗口范围内。
-
-        用缓存的工具条位置（_tb_pos），避免每帧查询窗口几何。
-        _tb_pos 在 _tb_show 中更新。
-        """
-        if self.tb_win is None or not self._tb_visible:
-            return False
-        pos = self._tb_pos
-        if pos is None:
-            return False
-        tx, ty, tw, th = pos
-        if tw <= 1 or th <= 1:
-            return False
-        sx = cx + self._logical_origin_x
-        sy = cy + self._logical_origin_y
-        return tx <= sx <= tx + tw and ty <= sy <= ty + th
-
-    def _set_toolbar_enabled(self, enabled):
-        """启用/禁用工具按钮。禁用时灰色 + 不响应。"""
-        for b in self._tool_btns.values():
-            b.setEnabled(enabled)
-        self._update_tool_button_styles()
-
-    def _update_tool_button_styles(self):
-        """选中工具蓝色高亮，其余恢复正常色（矢量图标通过重绘换色）。"""
-        for tool, b in self._tool_btns.items():
-            b.setProperty("active", tool == self.tool)
-        self._refresh_tool_icons()
-
-    def _refresh_tool_icons(self):
-        """按状态重绘各工具按钮图标：禁用=灰、选中=蓝、其余=深色。"""
-        for tool, b in self._tool_btns.items():
-            if not b.isEnabled():
-                col = TB_DISABLED
-            elif tool == self.tool:
-                col = TB_ACTIVE
-            else:
-                col = TB_FG
-            b.setIcon(_tb_icon(TOOL_ICON_FNS[tool], color=col))
 
     # ------------------------------------------------------------------ #
     # 渲染（唯一入口：paintEvent；以下方法只更新状态并触发重绘）
@@ -913,600 +574,6 @@ class Selector(QWidget):
             pass
 
     # ------------------------------------------------------------------ #
-    # 选区 crop
-    # ------------------------------------------------------------------ #
-
-    def _region_scale_for(self, region):
-        """选区覆盖屏幕中最大的物理/逻辑缩放比（输出分辨率不降级）。
-
-        单屏高 DPI：等于该屏 DPR；普通屏：1.0。选区跨多屏混合 DPI 时取最大
-        值，保证输出至少和最高 DPI 屏幕的物理像素一一对应。
-        """
-        l, t, r, b = region
-        scales = [max(m.sx, m.sy) for m in self._screens
-                  if m.intersects(l, t, r, b)]
-        if scales:
-            return max(scales)
-        return self._scale_x or 1.0
-
-    def _region_img_size(self, region):
-        """当前缩放比下，选区图应有的物理像素尺寸。"""
-        s = self._region_scale
-        l, t, r, b = region
-        return (max(1, int(round((r - l) * s))),
-                max(1, int(round((b - t) * s))))
-
-    def _crop_region(self, region, scale):
-        """按逻辑选区从整屏物理截图裁出选区图（物理分辨率）。
-
-        普通屏走与原实现等价的单次 crop；高 DPI / 多屏时逐显示器裁剪后
-        缩放到 ``逻辑尺寸 × scale`` 并拼接，保证输出为原始物理分辨率。
-        """
-        if self.full_img is None:
-            return None
-        l, t, r, b = region
-        ow = max(1, int(round((r - l) * scale)))
-        oh = max(1, int(round((b - t) * scale)))
-        out = Image.new("RGB", (ow, oh))
-        iw, ih = self.full_img.size
-        # 混合 DPI 下逻辑屏幕矩形可能重叠：按缩放比从低到高粘贴，
-        # 让高分辨率屏幕的物理内容覆盖重叠区（与 _local_to_full 一致）。
-        for m in sorted(self._screens, key=lambda m: max(m.sx, m.sy)):
-            il = max(l, m.lx)
-            it = max(t, m.ly)
-            ir = min(r, m.lx + m.lw)
-            ib = min(b, m.ly + m.lh)
-            if ir <= il or ib <= it:
-                continue
-            fx0, fy0 = m.local_to_physical(il, it)
-            fx1, fy1 = m.local_to_physical(ir, ib)
-            box = (max(0, min(int(round(fx0)), iw)),
-                   max(0, min(int(round(fy0)), ih)),
-                   max(0, min(int(round(fx1)), iw)),
-                   max(0, min(int(round(fy1)), ih)))
-            if box[2] <= box[0] or box[3] <= box[1]:
-                continue
-            crop = self.full_img.crop(box)
-            tw = max(1, int(round((ir - il) * scale)))
-            th = max(1, int(round((ib - it) * scale)))
-            if crop.size != (tw, th):
-                crop = crop.resize((tw, th), Image.LANCZOS)
-            out.paste(crop, (int(round((il - l) * scale)),
-                             int(round((it - t) * scale))))
-        return out
-
-    def _init_region_img(self):
-        """从 full_img crop 出 region_img，并按选区尺寸调整撤销快照上限。"""
-        if self.full_img is None:
-            return
-        scale = self._region_scale_for(self._region)
-        img = self._crop_region(self._region, scale)
-        if img is None:
-            return
-        self._region_scale = scale
-        self._region_img = img
-        self.undo.maxlen = self._undo_maxlen_for(img.width, img.height)
-
-    def _region_point(self, x, y):
-        """overlay 逻辑坐标 → 选区图物理坐标（越界自动 clamp）。
-
-        普通屏 scale=1 时与旧实现 ``x - left`` 完全等价。
-        """
-        l, t, r, b = self._region
-        s = self._region_scale
-        rx = int(round((x - l) * s))
-        ry = int(round((y - t) * s))
-        max_x = max(0, int(round((r - l) * s)) - 1)
-        max_y = max(0, int(round((b - t) * s)) - 1)
-        return max(0, min(rx, max_x)), max(0, min(ry, max_y))
-
-    @staticmethod
-    def _undo_maxlen_for(w, h):
-        """撤销快照份数上限：min(_UNDO_MAXLEN, 预算 // 单份字节数)，下限 _UNDO_MINLEN。"""
-        per = max(1, w * h * 3)
-        return max(_UNDO_MINLEN, min(_UNDO_MAXLEN, _UNDO_MEMORY_BUDGET // per))
-
-    def _rebase_annotations(self, img, old_base, new_base):
-        """选区移动（尺寸不变）：把 img 的标注层重新定基到新位置。
-
-        标注层 = img 与旧位置底图 old_base 的像素差（含抗锯齿边缘）；
-        贴到新位置底图 new_base 上——新位置的屏幕内容可见，标注跟随保留。
-        无标注（纯白/原图）时返回 new_base 的副本（仅位置变化）。
-        """
-        if img.size != new_base.size:
-            return img
-        # C 级 LUT 二值化（任意非零差 → 255），替代逐像素 Python lambda
-        mask = ImageChops.difference(img, old_base).convert("L").point(
-            _THRESHOLD_LUT)
-        if mask.getbbox() is None:
-            return new_base.copy()
-        base = new_base.copy()
-        base.paste(img, (0, 0), mask)
-        return base
-
-    def _adjust_region(self):
-        """调整选区后重新 crop、清空标注和撤销栈。"""
-        if self._region is None:
-            # 手柄拖动到选区尺寸 < MIN_SIZE 时 _normalize 返回 None（_region 被置空）。
-            # 此时选区无效，无法 crop / 清空标注，直接返回避免解包 None 崩溃。
-            return
-        l, t, r, b = self._region
-        W, H = self._actual_w, self._actual_h
-        l = max(0, min(l, W))
-        t = max(0, min(t, H))
-        r = max(0, min(r, W))
-        b = max(0, min(b, H))
-        if r - l < self.MIN_SIZE or b - t < self.MIN_SIZE:
-            return
-        self._init_region_img()
-        self.undo.clear()
-        # 缩放/贴边裁剪后 undo 已清空 → 选区内容必然等于定格底图 crop：
-        # 走底图透出的轻量渲染（与移动路径同），避免手柄拖动缩放时
-        # 每帧整图 PIL→QPixmap 转换（resize 帧开销主因）。
-        self._render_moved_region()
-
-    # ------------------------------------------------------------------ #
-    # 坐标 / 区域计算
-    # ------------------------------------------------------------------ #
-
-    def _to_virtual(self, wx, wy):
-        return (wx + self.origin_x, wy + self.origin_y)
-
-    def _calc_region(self, wx1, wy1, wx2, wy2):
-        vx1, vy1 = self._to_virtual(wx1, wy1)
-        vx2, vy2 = self._to_virtual(wx2, wy2)
-        left = min(vx1, vx2)
-        top = min(vy1, vy2)
-        w = abs(vx2 - vx1)
-        h = abs(vy2 - vy1)
-        if w < self.MIN_SIZE or h < self.MIN_SIZE:
-            return None
-        return (left, top, w, h)
-
-    @staticmethod
-    def _is_tiny_region(region):
-        """region 是否仍是按下时的 1x1 占位框（纯点击、未拖出真实选区）。
-
-        框选过渡中 mouseMoveEvent 只在实际宽或高 ≥ MIN_SIZE 时才更新选区，
-        因此选区仍 ≤1px 即代表用户只是点了一下。
-        """
-        l, t, r, b = region
-        return (r - l) <= 1 and (b - t) <= 1
-
-    def _local_to_full(self, x, y):
-        """overlay 逻辑坐标 → 整屏截图物理坐标（full_img 像素）。
-
-        精确逐屏映射时按所在显示器换算（混合 DPI 也正确）；逻辑屏幕矩形
-        可能重叠（Qt 混合 DPI），重叠区取缩放比最大的屏幕（与选区裁剪时
-        高分辨率块覆盖低分辨率块的规则一致）。否则按全局缩放比退化。
-        """
-        best = None
-        for m in self._screens:
-            if m.contains(x, y):
-                if best is None or max(m.sx, m.sy) >= max(best.sx, best.sy):
-                    best = m
-        if best is not None:
-            fx, fy = best.local_to_physical(x, y)
-            return int(round(fx)), int(round(fy))
-        return int(round(x * self._scale_x)), int(round(y * self._scale_y))
-
-    def _to_virtual_region(self):
-        """当前选区 → mss 虚拟桌面坐标 (left, top, width, height)；无选区返回 None。"""
-        if self._region is None:
-            return None
-        l, t, r, b = self._region
-        if self._mapping_exact:
-            fx_l, fy_t = self._local_to_full(l, t)
-            fx_r, fy_b = self._local_to_full(r, b)
-        else:
-            fx_l, fy_t = int(l * self._scale_x), int(t * self._scale_y)
-            fx_r, fy_b = int(r * self._scale_x), int(b * self._scale_y)
-        return (fx_l + self.origin_x, fy_t + self.origin_y,
-                fx_r - fx_l, fy_b - fy_t)
-
-    def _normalize(self, region):
-        l, t, r, b = region
-        l, r = min(l, r), max(l, r)
-        t, b = min(t, b), max(t, b)
-        W, H = self._actual_w, self._actual_h
-        if r < 0 or b < 0 or l >= W or t >= H:
-            return None
-        l = max(0, min(l, W))
-        t = max(0, min(t, H))
-        r = max(0, min(r, W))
-        b = max(0, min(b, H))
-        if r - l < self.MIN_SIZE or b - t < self.MIN_SIZE:
-            return None
-        return (l, t, r, b)
-
-    def _handle_coords(self, l, t, r, b):
-        return {
-            "nw": (l, t), "n": ((l + r) // 2, t), "ne": (r, t),
-            "e": (r, (t + b) // 2), "se": (r, b),
-            "s": ((l + r) // 2, b), "sw": (l, b), "w": (l, (t + b) // 2),
-        }
-
-    # ------------------------------------------------------------------ #
-    # 鼠标事件
-    # ------------------------------------------------------------------ #
-
-    def _hit_test(self, x, y):
-        if self._mode != "adjust" or self._region is None:
-            return None
-        # 画过标注后选区锁定：undo 栈非空表示已有标注，手柄不可拖动
-        if self.undo:
-            return None
-        l, t, r, b = self._region
-        s = self.HANDLE_SIZE // 2  # 6px 热区，避免标注误触手柄
-        for name, (hx, hy) in self._handle_coords(l, t, r, b).items():
-            if abs(x - hx) <= s and abs(y - hy) <= s:
-                return name
-        return None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.RightButton:
-            self._cancel()
-            return
-        if event.button() != Qt.LeftButton:
-            return
-        x, y = _event_pos(event)
-        # 点击工具条区域时忽略（工具条是独立窗口，正常不会收到这里的点击）
-        if self._is_over_toolbar(x, y):
-            return
-        if self._mode == "select":
-            # 按下立刻创建最小框并进入 adjust 模式
-            self.start = (x, y)
-            self._mode = "adjust"
-            self._dragging_box = True
-            W, H = self._actual_w, self._actual_h
-            x = max(0, min(x, W - 1))
-            y = max(0, min(y, H - 1))
-            self._region = (x, y, x + 1, y + 1)
-            self._init_region_img()
-            self._set_toolbar_enabled(True)
-            self._render_all()
-            return
-        if self._region is None:
-            return
-        hit = self._hit_test(x, y)
-        if hit:
-            self._drag_op = (hit, "resize")
-            self._drag_start = (x, y)
-            self._drag_region = self._region
-            self._set_cursor_shape(self._CURSORS[hit])
-            self._crosshair = None
-            return
-        l, t, r, b = self._region
-        if self.tool == "move" and l <= x <= r and t <= y <= b:
-            self._drag_op = ("move", "move")
-            self._drag_start = (x, y)
-            self._drag_region = self._region
-            self._masks_hidden = True
-            self._set_cursor_shape(self._CURSORS["move"])
-            self._crosshair = None
-            self.update()
-            return
-        # 选区内 → 开始标注
-        if l <= x <= r and t <= y <= b:
-            if self._region_img is None:
-                return
-            rx, ry = self._region_point(x, y)
-            if self.tool == "text":
-                self._input_text(rx, ry)
-                self.drawing = False
-                self.draw_start = None
-                self._draw_start_logical = None
-                return
-            self.drawing = True
-            self.draw_start = (rx, ry)
-            self._draw_start_logical = (x, y)
-            self._brush_last = (rx, ry)
-            self._crosshair = None
-            self.undo.push(self._region_img.copy())
-            if self.tool == "brush":
-                d = ImageDraw.Draw(self._region_img)
-                d.point(self.draw_start, fill=self.color)
-                # 起笔整图转换一次作底图，并重置累计 patch 状态
-                # （bbox=None：首帧由 _expand_brush_bbox 从 _brush_last/当前点初始化）
-                self._brush_moves = 0
-                self._brush_bbox = None
-                self._refresh_region_pixmap()
-                self.update()
-            self._update_cursor()
-
-    def mouseMoveEvent(self, event):
-        x, y = _event_pos(event)
-        # select 模式：十字准星跟随
-        if self._mode == "select":
-            self._crosshair = (x, y, 0, 0)
-            self._update_cursor()
-            self.update()
-            return
-        if self._drag_op is None and self.start is not None:
-            # select→adjust 过渡：更新框大小
-            sx, sy = self.start
-            x1, y1 = min(sx, x), min(sy, y)
-            x2, y2 = max(sx, x), max(sy, y)
-            W, H = self._actual_w, self._actual_h
-            if sx <= 1 or x <= 1:
-                x1 = 0
-            if sy <= 1 or y <= 1:
-                y1 = 0
-            if sx >= W - 2 or x >= W - 2:
-                x2 = W
-            if sy >= H - 2 or y >= H - 2:
-                y2 = H
-            w = x2 - x1
-            h = y2 - y1
-            if w < self.MIN_SIZE and h < self.MIN_SIZE:
-                return
-            self._region = self._normalize((x1, y1, x2, y2))
-            if self._region:
-                l, t, r, b = self._region
-                # 标签显示实际输出（物理）尺寸，高 DPI 下与保存结果一致
-                scale = self._region_scale_for(self._region)
-                self._crosshair = (
-                    x, y,
-                    int(round((r - l) * scale)),
-                    int(round((b - t) * scale)),
-                )
-            self._render_all()
-            return
-        # 手柄 resize / 移动
-        if self._drag_op is not None and self._drag_start is not None:
-            op, kind = self._drag_op
-            dx = x - self._drag_start[0]
-            dy = y - self._drag_start[1]
-            l, t, r, b = self._drag_region
-            if kind == "move":
-                l, t, r, b = l + dx, t + dy, r + dx, b + dy
-            else:
-                if op in ("w", "sw", "nw"):
-                    l = l + dx
-                if op in ("e", "ne", "se"):
-                    r = r + dx
-                if op in ("n", "nw", "ne"):
-                    t = t + dy
-                if op in ("s", "sw", "se"):
-                    b = b + dy
-            previous_region = self._region
-            self._region = self._normalize((l, t, r, b))
-            if (
-                kind == "move"
-                and self.full_img is not None
-                and self._region is not None
-                and (self._region[2] - self._region[0],
-                     self._region[3] - self._region[1])
-                == (previous_region[2] - previous_region[0],
-                    previous_region[3] - previous_region[1])
-            ):
-                self._render_moved_region()
-            else:
-                self._adjust_region()
-            return
-        # 标注
-        if self.drawing and self._region_img is not None:
-            rx, ry = self._region_point(x, y)
-            s = self._region_scale
-            if self.tool == "brush":
-                draw_brush(self._region_img, [self._brush_last, (rx, ry)],
-                           self.color, self.width_attr * s)
-                # 局部 patch 增量更新：只转换"自上次整图转换以来"累计线段
-                # 包围盒，避免每帧整图转换，也不能只转最后一段（会丢轨迹）。
-                # 每 _BRUSH_FULL_REFRESH_EVERY 段整图补齐一次，防止包围盒膨胀。
-                self._brush_moves += 1
-                if self._brush_moves >= self._BRUSH_FULL_REFRESH_EVERY:
-                    self._brush_moves = 0
-                    self._brush_bbox = None
-                    self._refresh_region_pixmap()
-                else:
-                    x0, y0, x1, y1 = self._expand_brush_bbox(
-                        self._brush_last, (rx, ry))
-                    self._refresh_brush_patch(x0, y0, x1, y1)
-                self._brush_last = (rx, ry)
-                self.update()
-            else:
-                # 预览始终用 overlay 逻辑坐标（QPainter 直接画在窗口上）
-                sx, sy = self._draw_start_logical or (x, y)
-                if self.tool == "ellipse" and alt_pressed(event):
-                    ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, x, y)
-                    self._set_preview(min(ex0, ex1), min(ey0, ey1),
-                                      max(ex0, ex1), max(ey0, ey1))
-                else:
-                    self._set_preview(sx, sy, x, y)
-        self._update_cursor(x, y)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return
-        x, y = _event_pos(event)
-        completed_move = (
-            self._drag_op is not None and self._drag_op[1] == "move"
-        )
-        moved_from = self._drag_region  # 拖动开始时的选区（移动重定基用）
-        self.start = None
-        self._drag_op = None
-        self._drag_start = None
-        self._drag_region = None
-
-        self._update_cursor(x, y)
-        self._crosshair = None
-        # 画框结束：切换到完整渲染（定格 + 重裁选区图）
-        if self._dragging_box:
-            self._dragging_box = False
-            if self._region is None or self._is_tiny_region(self._region):
-                # 纯点击（未拖出 ≥ MIN_SIZE 的框，选区仍是按下时的 1x1 占位框）：
-                # 回到 select 模式且不定格——一次点击不应触发 hide→截屏→show
-                # 的整屏捕获与闪烁，也不应留下 1x1 选区（与 MIN_SIZE 语义一致）。
-                self._region = None
-                self._mode = "select"
-                self._set_toolbar_enabled(False)
-                self._tb_hide()
-                self._render_all()
-                self.update()
-                return
-            try:
-                self._freeze_selection()
-                # _freeze_selection 里 hide → 截图 → show 会让 overlay 窗口重映射，
-                # 键盘焦点可能随之丢失（落到之前的应用）。
-                # 强制把焦点拉回 overlay，保证松开鼠标后直接可用键盘
-                # （Ctrl+Z / Esc / Enter 等）操作选区。
-                self._force_focus()
-                self._init_region_img()
-                self._render_all()
-            except Exception as exc:
-                # 锁屏 / RDP 断开 / 显示器变化等导致截屏失败时，异常若穿透
-                # Qt 事件循环会直接结束进程，这里统一回退到 select 模式。
-                self._abort_capture(exc)
-                return
-            self.update()
-            return
-        if self._region is None:
-            # 手柄拖到选区 < MIN_SIZE（_normalize 置空）后落笔：回到 select 模式，
-            # 收起工具条（此前工具条会残留悬浮在 select 模式的画面上）。
-            self._mode = "select"
-            self._set_toolbar_enabled(False)
-            self._tb_hide()
-            self._render_all()
-            self.update()
-            return
-        if completed_move and self.full_img is not None:
-            # 移动保持尺寸：标注跟随内容——把标注层（旧图与旧位置底图的差）贴到
-            # 新位置底图上；撤销快照同样重新定基，Ctrl+Z 依然有效。
-            l, t, r, b = self._region
-            old_img = self._region_img
-            old_region = moved_from
-            if (old_img is not None and old_region is not None
-                    and old_img.size == self._region_img_size(self._region)):
-                old_base = self._crop_region(old_region, self._region_scale)
-                if old_base.size == old_img.size:
-                    new_base = self._crop_region(self._region, self._region_scale)
-                    self._region_img = self._rebase_annotations(
-                        old_img, old_base, new_base)
-                    self.undo.map(
-                        lambda im: self._rebase_annotations(
-                            im, old_base, new_base))
-                else:
-                    self._init_region_img()
-            else:
-                # 尺寸变了（贴边被裁剪；移动中 _adjust_region 已重裁并清空标注）
-                self._init_region_img()
-            self._masks_hidden = False
-            self._render_all()
-            self.update()
-            return
-        if not self.drawing or self._region_img is None:
-            self._preview = None
-            self._draw_start_logical = None
-            self.update()
-            return
-        self.drawing = False
-        rx, ry = self._region_point(x, y)
-        sx, sy = self.draw_start
-        self._draw_start_logical = None
-        s = self._region_scale
-        self._preview = None
-        if self.tool == "brush":
-            # 画笔已在拖动中增量绘制；重置累计 patch 状态（下方统一整图转换）
-            self._brush_moves = 0
-            self._brush_bbox = None
-        elif self.tool == "rect":
-            draw_rect(self._region_img,
-                      [min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry)],
-                      self.color, self.width_attr * s)
-        elif self.tool == "ellipse":
-            if abs(rx - sx) < 1 and abs(ry - sy) < 1:
-                self._refresh_region_pixmap()
-                self.update()
-                return
-            # 按住 Alt 约束为正圆
-            ex0, ey0, ex1, ey1 = sx, sy, rx, ry
-            if alt_pressed(event):
-                ex0, ey0, ex1, ey1 = self._constrain_ellipse(sx, sy, rx, ry)
-            draw_ellipse(self._region_img,
-                         [min(ex0, ex1), min(ey0, ey1), max(ex0, ex1), max(ey0, ey1)],
-                         self.color, self.width_attr * s)
-        elif self.tool == "arrow":
-            if abs(rx - sx) < 1 and abs(ry - sy) < 1:
-                self._refresh_region_pixmap()
-                self.update()
-                return
-            draw_arrow(self._region_img, (sx, sy), (rx, ry),
-                       self.color, self.width_attr * s)
-        elif self.tool == "mosaic":
-            self._region_img = mosaic(
-                self._region_img,
-                min(sx, rx), min(sy, ry), max(sx, rx), max(sy, ry),
-                block=24 * s)
-        self._refresh_region_pixmap()
-        self.update()
-        # 标注完成后确保工具条保持在最前（topmost 标志已含在窗口标志中，
-        # raise_ 只调整置顶层内 Z 序，不抢键盘焦点）
-        if self.tb_win is not None:
-            self.tb_win.raise_()
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._confirm()
-
-    def _set_preview(self, x0, y0, x1, y1):
-        """设置标注预览（绝对坐标），paintEvent 负责绘制。"""
-        l, t, r, b = self._region
-        px0 = max(l, min(x0, x1))
-        py0 = max(t, min(y0, y1))
-        px1 = min(r, max(x0, x1))
-        py1 = min(b, max(y0, y1))
-        if px1 - px0 < 1 or py1 - py0 < 1:
-            self._preview = None
-            self.update()
-            return
-        if self.tool == "arrow":
-            # 端点 clamp 到选区（与最终渲染的 _region_point 一致），
-            # 预览不画出选区外；分别 clamp 两端，方向保持正确
-            ax0, ay0 = max(l, min(x0, r)), max(t, min(y0, b))
-            ax1, ay1 = max(l, min(x1, r)), max(t, min(y1, b))
-            self._preview = {"tool": "arrow", "start": (ax0, ay0), "end": (ax1, ay1)}
-        else:
-            self._preview = {"tool": self.tool,
-                             "box": (px0, py0, px1, py1)}
-        self.update()
-
-    def _update_cursor(self, x=None, y=None):
-        if x is not None:
-            if self._mode == "select" or self._region is None:
-                cursor = Qt.CrossCursor
-            else:
-                hit = self._hit_test(x, y)
-                if hit:
-                    cursor = self._CURSORS[hit]
-                else:
-                    l, t, r, b = self._region
-                    inside = l <= x <= r and t <= y <= b
-                    cursor = (
-                        self._CURSORS["move"]
-                        if inside and self.tool == "move"
-                        else Qt.CrossCursor
-                    )
-        else:
-            cursor = Qt.CrossCursor
-        self._set_cursor_shape(cursor)
-
-    def _set_cursor_shape(self, shape):
-        self._cursor = shape
-        try:
-            self.setCursor(shape)
-        except Exception:
-            pass
-
-    def _constrain_ellipse(self, x0, y0, x1, y1):
-        """按住 Alt 时约束椭圆为正圆：取横纵位移较大值作为边长。"""
-        dx, dy = x1 - x0, y1 - y0
-        d = max(abs(dx), abs(dy))
-        sx = 1 if dx >= 0 else -1
-        sy = 1 if dy >= 0 else -1
-        return (x0, y0, x0 + sx * d, y0 + sy * d)
-
-    # ------------------------------------------------------------------ #
     # 键盘
     # ------------------------------------------------------------------ #
 
@@ -1555,7 +622,7 @@ class Selector(QWidget):
         return None
 
     # ------------------------------------------------------------------ #
-    # 撤销 / 工具 / 颜色 / 粗细
+    # 撤销
     # ------------------------------------------------------------------ #
 
     def _undo(self):
@@ -1565,31 +632,6 @@ class Selector(QWidget):
             # update() 已触发重绘；不要在此 processEvents——嵌套事件循环
             # 会让排队的 OCR 弹窗/定时器在撤销中途重入。
             self._render_all()
-
-    def _select_tool(self, name):
-        self.tool = name
-        self._tb_active_tool = name
-        # 不 activateWindow / 不抢焦点（对齐旧版"只重设 topmost、不 lift"）：
-        # 工具条的置顶已在窗口标志中，切换工具只更新按钮高亮。
-        self._update_tool_button_styles()
-        self._update_cursor()
-
-    def _pick_color(self):
-        col = QColorDialog.getColor(QColor(self.color), self, "选择颜色")
-        if col.isValid():
-            self.color = col.name()
-            self._update_color_row()
-            # 颜色变化后重渲染当前标注
-            if self._region_img is not None and self._mode == "adjust":
-                self._render_all()
-
-    def _on_width_change(self):
-        try:
-            val = int(self._spin.value())
-            self.width_attr = max(1, min(30, val))
-        except Exception:
-            pass
-
     # ------------------------------------------------------------------ #
     # 识别文字（OCR）
     # ------------------------------------------------------------------ #

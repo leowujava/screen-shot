@@ -1,4 +1,4 @@
-from editor import ocr_result_to_text
+from drawing import ocr_result_to_text
 
 
 def _box(x, y):

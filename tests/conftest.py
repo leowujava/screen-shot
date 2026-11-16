@@ -13,3 +13,13 @@ def qt_app():
     """整个测试会话共享一个 QApplication（Qt 要求同进程只有一个）。"""
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config(tmp_path, monkeypatch):
+    """配置指向不存在的临时路径并清空缓存：测试不受真实用户配置影响。"""
+    import config
+    monkeypatch.setattr(config, "_CACHE", None)
+    monkeypatch.setattr(config, "config_path",
+                        lambda: str(tmp_path / "config.json"))
+    yield

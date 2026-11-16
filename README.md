@@ -22,6 +22,8 @@ python app.py
 | Ctrl+Shift+S | 全屏截图（保存到桌面 + 复制到剪贴板） |
 | Ctrl+Shift+Q | 退出 |
 
+> 快捷键可通过配置文件自定义（见下文「配置」）。
+
 ## 托盘
 
 - 左键点击图标：直接触发框选截图
@@ -64,13 +66,13 @@ python app.py
 | 工具条"✓ 确认" | 确认（复制到剪贴板） |
 | 工具条"✕ 取消" | 取消 |
 
-> `editor.py` 保留了一个独立的 PySide6 编辑器窗口（保存 / 复制 / OCR），
+> `tools/editor.py` 保留了一个独立的 PySide6 编辑器窗口（保存 / 复制 / OCR），
 > 供手动测试（`tests/manual_editor.py`）与后续复用，主流程不会自动打开。
 
 ## 识别文字（OCR）
 
 - 选区工具条"识别文字"按钮：识别选区内文字，弹窗显示（按阅读顺序排列），可"复制选中 / 复制全部"到剪贴板
-- 独立编辑器（`editor.py`）的"识别文字"按钮行为一致
+- 独立编辑器（`tools/editor.py`）的"识别文字"按钮行为一致
 - OCR 在工作线程执行，识别期间界面不卡死
 - 支持中英文混合识别（基于 `rapidocr` / PP-OCRv6，已加入 requirements.txt），无需安装 Tesseract
 
@@ -83,8 +85,42 @@ python app.py
 
 ## 保存位置
 
-默认：桌面 `截图_YYYYMMDD_HHMMSS.png`（同名已存在时自动追加 `_1`、`_2` 后缀，不覆盖；
+默认：桌面 `截图_YYYYMMDD_HHMMSS.png`（目录可通过配置 `save_dir` 修改，见「配置」；
+同名已存在时自动追加 `_1`、`_2` 后缀，不覆盖；
 文件名以独占方式原子创建，并发保存不会互相覆盖）
+
+## 配置
+
+可选配置文件：`%APPDATA%\screen-shot\config.json`（不存在则全部使用默认值；
+程序只读、不回写）。完整示例（各字段均可省略）：
+
+```json
+{
+  "hotkeys": {
+    "region": "<ctrl>+<shift>+x",
+    "fullscreen": "<ctrl>+<shift>+s",
+    "quit": "<ctrl>+<shift>+q"
+  },
+  "save_dir": "",
+  "color": "#f5484d",
+  "width": 3
+}
+```
+
+| 字段 | 说明 | 默认 |
+|---|---|---|
+| `hotkeys.region` | 框选截图热键 | Ctrl+Shift+X |
+| `hotkeys.fullscreen` | 全屏截图热键 | Ctrl+Shift+S |
+| `hotkeys.quit` | 退出热键 | Ctrl+Shift+Q |
+| `save_dir` | 保存目录（留空 = 桌面，支持 `~`） | 桌面 |
+| `color` | 默认标注颜色（`#rrggbb`） | 色板第一色（红） |
+| `width` | 默认线宽（1–30，越界自动收敛） | 3 |
+
+- 热键语法同 pynput（如 `<ctrl>+<alt>+a`）；设为空串 `""` 禁用该热键
+- 两个动作设成同一组合时，按 region → fullscreen → quit 顺序后者让位默认值，仍冲突则禁用
+- 文件缺失 / JSON 损坏 / 字段非法一律回退默认值（记日志），绝不阻断启动；
+  热键组合无法解析时整体回退默认热键
+- 配置在启动时读取一次，修改后需重启生效
 
 ## 单实例与日志
 

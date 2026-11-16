@@ -16,6 +16,7 @@ from capture import (
     copy_to_clipboard,
     save_image,
 )
+from config import DEFAULT_HOTKEYS, get_config
 from selector import Selector
 
 # 全局持有：Qt 应用、主线程调度器、未结束的选区窗口
@@ -223,6 +224,21 @@ def _make_tray_icon_image():
 _SINGLE_INSTANCE_MUTEX = "Local\\screen-shot-single-instance"
 
 
+def _make_hotkey_listener(actions, hotkeys):
+    """构建全局热键监听器。配置的热键组合非法（pynput 解析失败）时
+    回退默认热键并记日志，不阻断启动。
+
+    actions: {动作名: 回调}，动作名与 config.DEFAULT_HOTKEYS 的键一致。
+    hotkeys: {热键组合: 回调}（来自用户配置，空组合已在配置层剔除）。
+    """
+    try:
+        return kb.GlobalHotKeys(hotkeys)
+    except Exception as e:
+        get_logger().error("热键配置非法，回退默认热键：%s", e)
+        return kb.GlobalHotKeys(
+            {DEFAULT_HOTKEYS[k]: fn for k, fn in actions.items()})
+
+
 def _acquire_single_instance_mutex(name=_SINGLE_INSTANCE_MUTEX):
     """单实例保护：可运行返回互斥体句柄，已有实例运行返回 None。
 
@@ -300,11 +316,14 @@ def main():
     t = threading.Thread(target=run_tray, daemon=True)
     t.start()
 
-    with kb.GlobalHotKeys({
-        "<ctrl>+<shift>+x": lambda: do_region_capture(),
-        "<ctrl>+<shift>+s": lambda: do_fullscreen_capture(),
-        "<ctrl>+<shift>+q": lambda: on_quit(),
-    }):
+    actions = {
+        "region": do_region_capture,
+        "fullscreen": do_fullscreen_capture,
+        "quit": on_quit,
+    }
+    hk_cfg = get_config()["hotkeys"]
+    hotkeys = {hk_cfg[k]: fn for k, fn in actions.items() if hk_cfg.get(k)}
+    with _make_hotkey_listener(actions, hotkeys):
         try:
             app.exec()
         except KeyboardInterrupt:

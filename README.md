@@ -12,6 +12,39 @@ pip install -r requirements.txt
 
 ```bash
 python app.py
+# 等价方式（项目根目录下）
+python -m src
+```
+
+## 目录结构
+
+源码直接在 `src/` 下，按功能分级（`src` 本身即源码包）：
+
+```
+screen-shot/
+├── app.py                  # 薄入口（兼容 python app.py / PyInstaller）
+├── src/                    # 源码包
+│   ├── app.py              # 主入口：托盘 / 全局热键 / Qt 事件循环 / 单实例
+│   ├── core/               # 核心逻辑（无 Qt 依赖）
+│   │   ├── capture.py      # 截屏、保存、剪贴板
+│   │   ├── config.py       # 用户配置读取
+│   │   ├── applog.py       # 滚动文件日志
+│   │   ├── drawing.py      # 标注绘制与 OCR
+│   │   └── screenmap.py    # 多显示器 / 高 DPI 坐标映射
+│   └── ui/                 # Qt 界面
+│       ├── selector.py     # 选区窗口门面（组合下面三个 Mixin）
+│       ├── selector_region.py  # 选区几何 / 裁剪 / 撤销预算
+│       ├── selector_toolbar.py # 工具条构建与交互
+│       ├── selector_mouse.py   # 鼠标状态机 / 标注绘制
+│       ├── theme.py        # 主题常量与色板
+│       ├── tb_icons.py     # 工具条图标绘制
+│       ├── widgets.py      # 工具条 / OCR 结果弹窗
+│       └── qtutil.py       # Qt 通用工具
+├── tools/editor.py         # 独立编辑器窗口（主流程不自动打开）
+├── tests/                  # pytest 测试与手动脚本
+├── docs/                   # 设计与计划文档
+├── pyproject.toml          # pytest 配置（pythonpath 指向项目根）
+└── screen-shot.spec        # PyInstaller 打包脚本
 ```
 
 ## 快捷键

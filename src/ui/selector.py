@@ -48,21 +48,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from applog import get_logger
-from config import get_config
-from drawing import (
+from ..core.applog import get_logger
+from ..core.config import get_config
+from ..core.drawing import (
     UndoStack, arrow_geometry, draw_text, get_ocr_engine, ocr_result_to_text,
 )
-from screenmap import build_mappings, qt_virtual_origin
+from ..core.screenmap import build_mappings, qt_virtual_origin
 
-from theme import (
+from .theme import (
     BORDER_INNER, BORDER_OUTLINE, CROSSHAIR_COLOR, CROSSHAIR_WIDTH,
     DIM_WINDOW_OPACITY, FULL_WINDOW_OPACITY, LABEL_BG, LABEL_FG,
     MASK_ALPHA, PALETTE,
 )
 # 图标与辅助窗口拆到独立模块；这里再导出全部名字，
-# 保持 `import selector` 的既有接口（测试/手动脚本直接引用）。
-from tb_icons import (
+# 保持 `from src.ui import selector` 的既有接口（测试/手动脚本直接引用）。
+from .tb_icons import (
     TB_ICON_SCALE, TB_ICON_SIZE, TOOL_ICON_FNS, _tb_icon,
     _paint_icon_arrow, _paint_icon_brush, _paint_icon_cancel,
     _paint_icon_color, _paint_icon_confirm, _paint_icon_copy,
@@ -70,17 +70,17 @@ from tb_icons import (
     _paint_icon_ocr, _paint_icon_rect, _paint_icon_save,
     _paint_icon_text, _paint_icon_undo,
 )
-from widgets import _OcrResultDialog, _Toolbar
+from .widgets import _OcrResultDialog, _Toolbar
 # Qt 通用工具 / 选区几何 / 撤销预算常量拆到独立模块；重导出保持门面接口。
 # 注意：_virtual_screen_size / _pil_to_qpixmap 的调用点必须留在本文件
 # （测试 monkeypatch selector 模块名字来拦截/统计调用）。
-from qtutil import _event_pos, _pil_to_qpixmap, _virtual_screen_size
-from selector_region import (
+from .qtutil import _event_pos, _pil_to_qpixmap, _virtual_screen_size
+from .selector_region import (
     RegionMixin, _THRESHOLD_LUT, _UNDO_MEMORY_BUDGET, _UNDO_MAXLEN,
     _UNDO_MINLEN,
 )
-from selector_toolbar import ToolbarMixin
-from selector_mouse import MouseMixin
+from .selector_toolbar import ToolbarMixin
+from .selector_mouse import MouseMixin
 
 
 class Selector(ToolbarMixin, MouseMixin, RegionMixin, QWidget):

@@ -14,7 +14,7 @@ import json
 import os
 import re
 
-from applog import get_logger
+from .applog import get_logger
 
 # 默认热键（pynput GlobalHotKeys 语法）
 DEFAULT_HOTKEYS = {

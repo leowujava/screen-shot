@@ -7,7 +7,7 @@ PySide6 版下不存在 Tk 的共享 Tcl 解释器问题，等价回归是：
 from PIL import Image
 
 from tools.editor import EditorWindow
-from selector import Selector
+from src.ui.selector import Selector
 
 
 def test_selector_close_then_editor_opens(qt_app):

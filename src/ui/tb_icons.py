@@ -15,7 +15,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 
-from theme import PALETTE, TB_BG, TB_FG, TB_HOVER
+from .theme import PALETTE, TB_BG, TB_FG, TB_HOVER
 
 # 工具条矢量图标绘制尺寸（逻辑像素）与超采样倍数
 TB_ICON_SIZE = 20

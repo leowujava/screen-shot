@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-import applog
+from src.core import applog
 
 
 @pytest.fixture

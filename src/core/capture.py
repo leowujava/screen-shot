@@ -4,7 +4,7 @@ from datetime import datetime
 from PIL import Image
 import mss
 
-from config import get_config
+from .config import get_config
 
 
 def capture_virtual_screen_size():

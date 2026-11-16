@@ -18,7 +18,7 @@ def qt_app():
 @pytest.fixture(autouse=True)
 def _isolated_config(tmp_path, monkeypatch):
     """配置指向不存在的临时路径并清空缓存：测试不受真实用户配置影响。"""
-    import config
+    from src.core import config
     monkeypatch.setattr(config, "_CACHE", None)
     monkeypatch.setattr(config, "config_path",
                         lambda: str(tmp_path / "config.json"))

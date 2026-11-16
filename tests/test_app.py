@@ -3,12 +3,12 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
-from app import process_fullscreen_capture
+from src.app import process_fullscreen_capture
 
 
 def test_process_fullscreen_saves_image():
     img = MagicMock()
-    with patch("app.save_image") as si, patch("app.copy_to_clipboard") as cc:
+    with patch("src.app.save_image") as si, patch("src.app.copy_to_clipboard") as cc:
         si.return_value = "C:\\shot.png"
         path = process_fullscreen_capture(img)
         assert path == "C:\\shot.png"
@@ -18,7 +18,7 @@ def test_process_fullscreen_saves_image():
 
 def test_do_copy_capture_uses_safe_copy():
     """复制截图应走 _safe_copy_to_clipboard（失败有提示），不再裸吞异常。"""
-    import app
+    from src import app
 
     done = threading.Event()
     mock_safe = MagicMock(side_effect=lambda img: done.set())
@@ -35,7 +35,7 @@ def test_do_copy_capture_uses_safe_copy():
 
 def test_do_copy_capture_reports_clipboard_failure():
     """剪贴板打开失败时，应弹出错误对话框而不是崩溃或静默。"""
-    import app
+    from src import app
 
     shown = threading.Event()
     mock_err = MagicMock(side_effect=lambda *a, **k: shown.set())
@@ -53,7 +53,7 @@ def test_do_copy_capture_reports_clipboard_failure():
 
 def test_open_region_selector_ignores_second_while_active():
     """防叠窗：已有未结束选区时，再次触发不得新建第二个 overlay。"""
-    import app
+    from src import app
 
     app._selector_holder.clear()
     try:
@@ -68,7 +68,7 @@ def test_open_region_selector_ignores_second_while_active():
 
 def test_open_region_selector_cleans_finished_and_reopens():
     """已结束的历史选区被清理；结束后可再次正常打开新选区。"""
-    import app
+    from src import app
 
     old = MagicMock(_finished=True)
     app._selector_holder.clear()
@@ -84,7 +84,7 @@ def test_open_region_selector_cleans_finished_and_reopens():
 
 def test_selector_copy_save_callbacks_ignore_cancel():
     """取消（region=None）时复制/保存回调不执行任何动作。"""
-    import app
+    from src import app
 
     with patch.object(app, "_safe_copy_to_clipboard") as mock_copy, \
          patch.object(app, "save_image") as mock_save:
@@ -96,7 +96,7 @@ def test_selector_copy_save_callbacks_ignore_cancel():
 
 def test_on_save_runs_in_worker_thread():
     """选区保存：PNG 编码在工作线程执行（不卡主线程事件循环）。"""
-    import app
+    from src import app
 
     done = threading.Event()
     info = {}
@@ -116,7 +116,7 @@ def test_on_save_runs_in_worker_thread():
 def test_on_save_reports_failure_without_raising():
     """选区保存失败：弹提示而非抛异常（异常不再沿 _exit→_finish 传播到
     Qt 事件循环导致整个应用崩溃）。"""
-    import app
+    from src import app
 
     shown = threading.Event()
     mock_err = MagicMock(side_effect=lambda *a, **k: shown.set())
@@ -129,7 +129,7 @@ def test_on_save_reports_failure_without_raising():
 
 def test_process_fullscreen_capture_save_failure_still_copies():
     """全屏保存失败：弹提示但仍复制到剪贴板（不阻断粘贴），返回 None。"""
-    import app
+    from src import app
 
     img = Image.new("RGB", (10, 10))
     shown = threading.Event()
@@ -146,7 +146,7 @@ def test_process_fullscreen_capture_save_failure_still_copies():
 def test_single_instance_mutex_blocks_second_acquire():
     """单实例：持有句柄期间再次获取返回 None；释放后可重新获取。"""
     import ctypes
-    import app
+    from src import app
     name = "Local\\screen-shot-test-mutex"
     h = app._acquire_single_instance_mutex(name)
     assert h is not None

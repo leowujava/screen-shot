@@ -2,7 +2,7 @@ import os
 
 import pytest
 from PIL import Image
-from capture import (
+from src.core.capture import (
     capture_fullscreen, capture_region, capture_virtual_screen_size,
     _build_dib, copy_text_to_clipboard, copy_to_clipboard, get_desktop_path,
     default_save_path, save_image,
@@ -84,7 +84,7 @@ def test_copy_text_to_clipboard_sets_unicode_text():
 
 def test_copy_text_to_clipboard_returns_false_on_error():
     from unittest.mock import patch
-    import capture
+    from src.core import capture
     with patch("win32clipboard.OpenClipboard", side_effect=OSError("clipboard busy")) as oc, \
          patch("time.sleep"):
         assert copy_text_to_clipboard("x") is False
@@ -154,7 +154,7 @@ def test_get_desktop_path_fallback(monkeypatch):
 
 
 def test_default_save_path_uses_desktop(monkeypatch):
-    import capture
+    from src.core import capture
     monkeypatch.setattr(capture, "get_desktop_path", lambda: "D:\\桌面")
     p = default_save_path()
     assert p.startswith("D:\\桌面\\截图_")

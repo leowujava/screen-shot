@@ -12,10 +12,10 @@ from PIL import ImageDraw
 
 from PySide6.QtCore import Qt
 
-from drawing import (
+from ..core.drawing import (
     alt_pressed, draw_arrow, draw_brush, draw_ellipse, draw_rect, mosaic,
 )
-from qtutil import _event_pos
+from .qtutil import _event_pos
 
 
 class MouseMixin:

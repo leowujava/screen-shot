@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# src 即源码包：从项目根导入
+pythonpath = ["."]
+testpaths = ["tests"]

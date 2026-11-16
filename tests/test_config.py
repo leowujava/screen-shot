@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-import config
+from src.core import config
 
 
 def _write(tmp_path, data):
@@ -48,7 +48,7 @@ def test_partial_config_keeps_other_defaults(tmp_path):
 
 def test_defaults_match_historical_hardcoded_behavior():
     """默认值必须与配置功能引入前的硬编码行为一致。"""
-    import theme
+    from src.ui import theme
     assert config.DEFAULT_COLOR == theme.PALETTE[0]
     assert config.DEFAULT_WIDTH == 3
     assert config.DEFAULT_HOTKEYS == {
@@ -164,7 +164,7 @@ def test_get_config_caches(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_default_save_path_uses_configured_dir(monkeypatch, tmp_path):
-    import capture
+    from src.core import capture
     monkeypatch.setattr(config, "_CACHE", {
         "hotkeys": dict(config.DEFAULT_HOTKEYS),
         "save_dir": str(tmp_path), "color": config.DEFAULT_COLOR,
@@ -175,15 +175,15 @@ def test_default_save_path_uses_configured_dir(monkeypatch, tmp_path):
 
 
 def test_default_save_path_empty_dir_uses_desktop(monkeypatch):
-    import capture
+    from src.core import capture
     monkeypatch.setattr(config, "_CACHE", None)   # 走隔离后的默认（save_dir=""）
     monkeypatch.setattr(capture, "get_desktop_path", lambda: "D:\\桌面")
     assert capture.default_save_path().startswith("D:\\桌面\\截图_")
 
 
 def test_selector_uses_configured_color_and_width(qt_app, monkeypatch):
-    import selector as sel_mod
-    from selector import Selector
+    from src.ui import selector as sel_mod
+    from src.ui.selector import Selector
     monkeypatch.setattr(sel_mod, "_virtual_screen_size", lambda: (0, 0))
     monkeypatch.setattr(config, "_CACHE", {
         "hotkeys": dict(config.DEFAULT_HOTKEYS),
@@ -203,7 +203,7 @@ def test_selector_uses_configured_color_and_width(qt_app, monkeypatch):
 
 def test_app_hotkey_listener_falls_back_on_invalid_config(monkeypatch):
     """配置的热键组合 pynput 解析失败：回退默认热键，不阻断启动。"""
-    import app
+    from src import app
     sentinel = object()
     calls = []
 
@@ -223,7 +223,7 @@ def test_app_hotkey_listener_falls_back_on_invalid_config(monkeypatch):
 
 
 def test_app_hotkey_listener_uses_configured_map(monkeypatch):
-    import app
+    from src import app
     sentinel = object()
     monkeypatch.setattr(app.kb, "GlobalHotKeys", lambda hk: sentinel)
     actions = {"region": lambda: None, "fullscreen": lambda: None,

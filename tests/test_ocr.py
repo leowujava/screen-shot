@@ -1,4 +1,4 @@
-from drawing import ocr_result_to_text
+from src.core.drawing import ocr_result_to_text
 
 
 def _box(x, y):
@@ -67,7 +67,7 @@ def test_ocr_engine_initialized_once_under_concurrent_calls(monkeypatch):
     import time
     import types
 
-    import drawing
+    from src.core import drawing
 
     calls = []
     calls_lock = threading.Lock()

@@ -45,7 +45,7 @@ def test_pil_to_qimage_owns_pixel_buffer(qt_app):
 def test_ocr_reexported_from_drawing():
     """editor 的 OCR 逻辑必须来自 drawing 的唯一实现（去重）。"""
     from tools import editor
-    import drawing
+    from src.core import drawing
     assert editor.ocr_result_to_text is drawing.ocr_result_to_text
 
 

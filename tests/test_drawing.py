@@ -3,7 +3,7 @@ import sys
 
 import pytest
 from PIL import Image, ImageDraw
-from drawing import (
+from src.core.drawing import (
     draw_arrow, draw_rect, draw_ellipse, draw_brush, draw_text, mosaic, UndoStack,
 )
 
@@ -49,7 +49,7 @@ def test_draw_arrow_no_line_ears_at_tip():
 
 def test_arrow_geometry_tapered_shaft_and_head():
     """锥形杆四边形 + 实心三角：头端比尾端宽，头底边不越过起点，尖端 = end。"""
-    from drawing import arrow_geometry
+    from src.core.drawing import arrow_geometry
 
     # 常规长度（右向）：尾边宽 = 线宽，头端边更宽
     shaft, head = arrow_geometry((0, 0), (100, 0), 3)
@@ -229,7 +229,8 @@ def test_draw_brush_single_point_matches_reference():
 
 def test_alt_pressed_modifiers_fallback(monkeypatch):
     """非 Windows 回退读 Qt 事件 modifiers()（Qt.AltModifier = 0x02000000）。"""
-    import drawing, sys
+    import sys
+    from src.core import drawing
 
     class Ev:
         def __init__(self, mods):
@@ -260,7 +261,7 @@ def test_draw_brush_perf_large_image():
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
 def test_load_font_prefers_cjk_font():
     from PIL import ImageFont
-    import drawing
+    from src.core import drawing
     font = drawing._load_font(16)
     assert isinstance(font, ImageFont.FreeTypeFont)
     assert os.path.basename(font.path) in ("msyh.ttc", "msyh.ttf", "simhei.ttf", "arial.ttf")
@@ -278,7 +279,7 @@ def test_draw_text_renders_cjk():
 
 def test_load_font_fallback_when_truetype_fails(monkeypatch):
     from PIL import ImageFont
-    import drawing
+    from src.core import drawing
 
     real_truetype = ImageFont.truetype
 

@@ -1,18 +1,18 @@
 """模块拆分回归：selector 保持门面接口，子模块可独立导入。
 
-selector.py 拆出 theme（常量）/ tb_icons（图标）/ widgets（辅助窗口）/
+src/ui/selector.py 拆出 theme（常量）/ tb_icons（图标）/ widgets（辅助窗口）/
 qtutil（Qt 工具）/ selector_toolbar / selector_mouse / selector_region（Mixin）后，
-`import selector` 的既有名字必须仍然可用且指向同一对象
+`from src.ui import selector` 的既有名字必须仍然可用且指向同一对象
 （测试与手动脚本直接引用 selector._tb_icon 等）。
 """
-import selector
-import tb_icons
-import theme
-import widgets
-import qtutil
-import selector_region
-import selector_toolbar
-import selector_mouse
+from src.ui import selector
+from src.ui import tb_icons
+from src.ui import theme
+from src.ui import widgets
+from src.ui import qtutil
+from src.ui import selector_region
+from src.ui import selector_toolbar
+from src.ui import selector_mouse
 
 
 def test_selector_reexports_are_same_objects():
@@ -55,10 +55,14 @@ def test_mixins_composed_into_selector():
 
 def test_submodules_import_without_selector():
     """子模块不反向依赖 selector（无循环导入）。"""
+    import os
     import subprocess
     import sys
-    code = ("import theme, tb_icons, widgets, qtutil, "
+    code = ("from src.ui import theme, tb_icons, widgets, qtutil, "
             "selector_region, selector_toolbar, selector_mouse")
+    # 子进程不继承 pytest 的 pythonpath，显式指向项目根（src 包所在处）
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PYTHONPATH=root)
     r = subprocess.run([sys.executable, "-c", code],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr

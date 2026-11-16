@@ -16,16 +16,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from theme import (
+from .theme import (
     PALETTE, TB_ACTIVE, TB_BG, TB_CANCEL_FG, TB_CONFIRM_FG,
     TB_DISABLED, TB_FG, TB_HOVER, TB_SEP,
 )
-from tb_icons import (
+from .tb_icons import (
     TB_ICON_SIZE, TOOL_ICON_FNS, _tb_icon,
     _paint_icon_cancel, _paint_icon_color, _paint_icon_confirm,
     _paint_icon_copy, _paint_icon_ocr, _paint_icon_save, _paint_icon_undo,
 )
-from widgets import _Toolbar
+from .widgets import _Toolbar
 
 
 class ToolbarMixin:

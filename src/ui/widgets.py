@@ -65,12 +65,12 @@ class _OcrResultDialog(QDialog):
         def copy_selected():
             sel = self.text_edit.selectedText()
             if sel:
-                from capture import copy_text_to_clipboard
+                from ..core.capture import copy_text_to_clipboard
                 if copy_text_to_clipboard(sel):
                     self.accept()
 
         def copy_all():
-            from capture import copy_text_to_clipboard
+            from ..core.capture import copy_text_to_clipboard
             if copy_text_to_clipboard(text):
                 self.accept()
 
@@ -91,7 +91,7 @@ class _OcrResultDialog(QDialog):
         if e.key() == Qt.Key_C and (e.modifiers() & Qt.ControlModifier):
             sel = self.text_edit.selectedText()
             if sel:
-                from capture import copy_text_to_clipboard
+                from ..core.capture import copy_text_to_clipboard
                 copy_text_to_clipboard(sel)
             return
         super().keyPressEvent(e)

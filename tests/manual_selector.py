@@ -1,9 +1,12 @@
+import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtWidgets import QApplication
 
-from selector import Selector
-from capture import capture_fullscreen
+from src.ui.selector import Selector
+from src.core.capture import capture_fullscreen
 
 
 def on_select(region, annotated_img):

@@ -1,5 +1,5 @@
 """screenmap 坐标映射测试：单屏高 DPI 退化 + 多屏混合 DPI 精确映射。"""
-import screenmap
+from src.core import screenmap
 
 
 def test_fallback_uniform_scale():

@@ -14,8 +14,8 @@ from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QToolButton
 
-import selector as sel_mod
-from selector import BORDER_INNER, Selector
+from src.ui import selector as sel_mod
+from src.ui.selector import BORDER_INNER, Selector
 
 
 # --------------------------------------------------------------------------- #
@@ -414,7 +414,7 @@ def test_high_dpi_selection_render_keeps_physical_detail(sel_env, monkeypatch):
 
 def test_mixed_dpi_crop_uses_screen_scale(sel_env):
     """混合 DPI 下选区裁剪按所在显示器的物理比例换算（而非全局比例）。"""
-    from screenmap import ScreenMapping
+    from src.core.screenmap import ScreenMapping
 
     sel = _make(sel_env, width=2880, height=1080)
     sel._actual_w, sel._actual_h = 2880, 1080
@@ -804,7 +804,7 @@ def test_all_toolbar_buttons_use_drawn_icons(sel_env):
     在 28×24 小按钮上模糊或缺字形；改用 QPainter 高倍绘制的 QIcon 后
     任意 DPI 下清晰、风格一致、易识别。
     """
-    import selector as s
+    from src.ui import selector as s
     sel = _make(sel_env, width=1920, height=1080)
     # 7 个工具按钮
     for tool in s.Selector.TOOLS:
@@ -822,7 +822,7 @@ def test_all_toolbar_buttons_use_drawn_icons(sel_env):
 
 def test_all_icon_painters_produce_non_null_qicons(sel_env):
     """全部 14 个图标绘制函数都应产出有效非空 QIcon。"""
-    import selector as s
+    from src.ui import selector as s
     fns = list(s.TOOL_ICON_FNS.values()) + [
         s._paint_icon_ocr, s._paint_icon_color, s._paint_icon_save,
         s._paint_icon_undo, s._paint_icon_copy,
@@ -1073,7 +1073,7 @@ def test_undo_maxlen_scales_with_region_size(sel_env):
     回归：固定 50 份对 4K 选区（≈24.9MB/份）会逼近 1.3GB；
     现在上限 = min(50, 预算 // 单份字节数)，总撤销内存有界。
     """
-    from selector import _UNDO_MEMORY_BUDGET, _UNDO_MAXLEN
+    from src.ui.selector import _UNDO_MEMORY_BUDGET, _UNDO_MAXLEN
 
     # 小选区：上限保持 50（撤销能回干净底图）
     assert Selector._undo_maxlen_for(80, 80) == _UNDO_MAXLEN
@@ -1555,11 +1555,11 @@ def test_ocr_result_dialog_copy_all(sel_env):
     full = Image.new("RGB", (100, 100), (255, 255, 255))
     sel = _make(sel_env, width=100, height=100, full_img=full)
 
-    from selector import _OcrResultDialog
+    from src.ui.selector import _OcrResultDialog
     from PySide6.QtWidgets import QPushButton
 
     dlg = _OcrResultDialog("line1\nline2", sel)
-    with patch("capture.copy_text_to_clipboard", return_value=True) as cc:
+    with patch("src.core.capture.copy_text_to_clipboard", return_value=True) as cc:
         btn = next(b for b in dlg.findChildren(QPushButton) if b.text() == "复制全部")
         btn.click()
     from PySide6.QtWidgets import QDialog

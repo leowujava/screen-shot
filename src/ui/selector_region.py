@@ -79,7 +79,7 @@ class RegionMixin:
             tw = max(1, int(round((ir - il) * scale)))
             th = max(1, int(round((ib - it) * scale)))
             if crop.size != (tw, th):
-                crop = crop.resize((tw, th), Image.LANCZOS)
+                crop = crop.resize((tw, th), Image.Resampling.LANCZOS)
             out.paste(crop, (int(round((il - l) * scale)),
                              int(round((it - t) * scale))))
         return out

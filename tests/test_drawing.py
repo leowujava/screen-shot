@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import pytest
 from PIL import Image, ImageDraw
@@ -14,7 +15,7 @@ def _blank(w=100, h=100, color=(255, 255, 255)):
 
 def _close(a, b, tol=40):
     """颜色分量接近判定（抗锯齿后边缘存在灰度过渡，允许容差）。"""
-    return all(abs(x - y) <= tol for x, y in zip(a, b))
+    return all(abs(x - y) <= tol for x, y in zip(a, b, strict=True))
 
 
 
@@ -133,7 +134,7 @@ def test_mosaic_blurs_region():
     img4x = Image.new("RGB", (400, 400), (255, 255, 255))
     d4 = ImageDraw.Draw(img4x)
     d4.line([(40, 40), (360, 360)], fill=(0, 0, 0), width=80)
-    img = img4x.resize((100, 100), Image.BILINEAR)
+    img = img4x.resize((100, 100), Image.Resampling.BILINEAR)
     result = mosaic(img, 0, 0, 100, 100, block=10)
     # 马赛克后，对角线边缘的块应为非纯黑/纯白的灰度
     has_mid = any(result.getpixel((x, y)) not in ((0, 0, 0), (255, 255, 255))
@@ -173,9 +174,6 @@ class TestUndoStack:
         assert s.pop() is None
 
 
-import time
-
-
 def _full_supersample_reference(img, points, color, width, scale=4):
     """旧整图 4x 超采样的参考实现，用于逐像素对拍。"""
     from PIL import ImageDraw
@@ -187,36 +185,92 @@ def _full_supersample_reference(img, points, color, width, scale=4):
     else:
         d.line([(x * scale, y * scale) for x, y in points], fill=color,
                width=max(1, int(width * scale)), joint="curve")
-    small = layer.resize((img.width, img.height), Image.LANCZOS)
+    small = layer.resize((img.width, img.height), Image.Resampling.LANCZOS)
     out = img.convert("RGBA")
     out.alpha_composite(small)
     return out.convert(img.mode)
 
 
-def test_draw_brush_matches_full_supersample():
-    """局部超采样必须与整图超采样一致（含触及图像边缘的线段）。
+def _full_supersample_shape_reference(img, draw_fn, scale=4):
+    """旧整图 4x 超采样的通用参考实现（draw_fn 在 4x 层上完成绘制）。"""
+    layer = Image.new("RGBA", (img.width * scale, img.height * scale), (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer), scale)
+    small = layer.resize((img.width, img.height), Image.Resampling.LANCZOS)
+    out = img.convert("RGBA")
+    out.alpha_composite(small)
+    return out.convert(img.mode)
 
-    内部像素严格相等；贴边 4px 内的边界像素允许每通道 ≤8 的差异
+
+def _compare_local_vs_full(expected, result, edge=4, edge_tol=8):
+    """局部超采样 vs 整图超采样逐像素比对（RGB，3 字节/像素）。
+
+    内部像素严格相等；贴边 edge px 内的边界像素允许每通道 ≤edge_tol 的差异
     （Pillow 重采样在图像边界会截断并重归一化 LANCZOS 核，局部层
     几何不同导致该 1-2 级灰度差，视觉不可见）。
     """
-    img = Image.new("RGB", (120, 120), (200, 210, 220))
-    points = [(2, 60), (60, 2), (118, 118)]  # 触及上/左/右/下边缘
-    expected = _full_supersample_reference(img, points, "#ff0000", 3)
-    result = img.copy()
-    draw_brush(result, points, "#ff0000", 3)
-    w, h = img.size
-    # 用 tobytes 逐像素比对（getdata 在 Pillow 14 移除；RGB 为 3 字节/像素）
+    w, h = expected.size
     eb, rb = expected.tobytes(), result.tobytes()
     for i in range(w * h):
         e = eb[i * 3:(i + 1) * 3]
         r = rb[i * 3:(i + 1) * 3]
         x, y = divmod(i, w)
-        if 4 <= x < w - 4 and 4 <= y < h - 4:
+        if edge <= x < w - edge and edge <= y < h - edge:
             assert e == r, f"内部像素 ({x},{y}) 不一致: {e} != {r}"
         else:
-            diff = max(abs(a - b) for a, b in zip(e, r))
-            assert diff <= 8, f"边界像素 ({x},{y}) 差异过大: {e} != {r} (diff={diff})"
+            diff = max(abs(a - b) for a, b in zip(e, r, strict=True))
+            assert diff <= edge_tol, f"边界像素 ({x},{y}) 差异过大: {e} != {r} (diff={diff})"
+
+
+def test_draw_brush_matches_full_supersample():
+    """局部超采样必须与整图超采样一致（含触及图像边缘的线段）。"""
+    img = Image.new("RGB", (120, 120), (200, 210, 220))
+    points = [(2, 60), (60, 2), (118, 118)]  # 触及上/左/右/下边缘
+    expected = _full_supersample_reference(img, points, "#ff0000", 3)
+    result = img.copy()
+    draw_brush(result, points, "#ff0000", 3)
+    _compare_local_vs_full(expected, result)
+
+
+def test_draw_rect_matches_full_supersample():
+    """矩形局部超采样与整图超采样一致（含触及图像边缘的矩形）。"""
+    img = Image.new("RGB", (120, 120), (200, 210, 220))
+    box = (2, 2, 118, 118)
+    expected = _full_supersample_shape_reference(
+        img, lambda d, s: d.rectangle([v * s for v in box],
+                                       outline="#00ff00", width=max(1, int(3 * s))))
+    result = img.copy()
+    draw_rect(result, box, "#00ff00", 3)
+    _compare_local_vs_full(expected, result)
+
+
+def test_draw_ellipse_matches_full_supersample():
+    """椭圆局部超采样与整图超采样一致（含触及图像边缘的椭圆）。"""
+    img = Image.new("RGB", (120, 120), (200, 210, 220))
+    box = (2, 2, 118, 118)
+    expected = _full_supersample_shape_reference(
+        img, lambda d, s: d.ellipse([v * s for v in box],
+                                     outline="#0000ff", width=max(1, int(3 * s))))
+    result = img.copy()
+    draw_ellipse(result, box, "#0000ff", 3)
+    _compare_local_vs_full(expected, result)
+
+
+def test_draw_arrow_matches_full_supersample():
+    """箭头局部超采样与整图超采样一致（含触及图像边缘的箭头）。"""
+    from src.core.drawing import arrow_geometry
+
+    img = Image.new("RGB", (120, 120), (200, 210, 220))
+    start, end = (2, 60), (118, 60)
+    shaft, head = arrow_geometry(start, end, 3)
+
+    def draw(d, s):
+        d.polygon([(x * s, y * s) for x, y in shaft], fill="#ff0000")
+        d.polygon([(x * s, y * s) for x, y in head], fill="#ff0000")
+
+    expected = _full_supersample_shape_reference(img, draw)
+    result = img.copy()
+    draw_arrow(result, start, end, "#ff0000", 3)
+    _compare_local_vs_full(expected, result)
 
 
 def test_draw_brush_single_point_matches_reference():
@@ -256,6 +310,21 @@ def test_draw_brush_perf_large_image():
         last = p
     elapsed = time.perf_counter() - t0
     assert elapsed < 1.0, f"30 段画笔耗时 {elapsed:.2f}s（阈值 1.0s）"
+
+
+def test_draw_shapes_perf_large_image():
+    """4K 图上画小矩形/椭圆/箭头应在 1 秒内完成。
+
+    常见场景：大选区（4K）上画小标注。优化前每个形状都要整图 4x 层
+    （15360×8640 ≈ 133Mpx / 500MB）；现在只需形状包围盒的 4x 层。
+    """
+    big = Image.new("RGB", (3840, 2160), (255, 255, 255))
+    t0 = time.perf_counter()
+    draw_rect(big, (100, 100, 500, 400), "#ff0000", 3)
+    draw_ellipse(big, (100, 100, 500, 400), "#00ff00", 3)
+    draw_arrow(big, (100, 300), (500, 300), "#0000ff", 3)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0, f"4K 图 3 个小形状耗时 {elapsed:.2f}s（阈值 1.0s）"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")

@@ -58,7 +58,7 @@ from ..core.screenmap import build_mappings, qt_virtual_origin
 from .theme import (
     BORDER_INNER, BORDER_OUTLINE, CROSSHAIR_COLOR, CROSSHAIR_WIDTH,
     DIM_WINDOW_OPACITY, FULL_WINDOW_OPACITY, LABEL_BG, LABEL_FG,
-    MASK_ALPHA, PALETTE,
+    MASK_ALPHA, PALETTE, UI_FONT_FAMILY, UI_FONT_SIZE_LABEL,
 )
 # 图标与辅助窗口拆到独立模块；这里再导出全部名字，
 # 保持 `from src.ui import selector` 的既有接口（测试/手动脚本直接引用）。
@@ -284,7 +284,7 @@ class Selector(ToolbarMixin, MouseMixin, RegionMixin, QWidget):
                 continue
             crop = img.crop(box)
             if crop.size != (rx - lx, ry - ly):
-                crop = crop.resize((rx - lx, ry - ly), Image.LANCZOS)
+                crop = crop.resize((rx - lx, ry - ly), Image.Resampling.LANCZOS)
             display.paste(crop, (lx, ly))
         return _pil_to_qpixmap(display)
 
@@ -389,7 +389,7 @@ class Selector(ToolbarMixin, MouseMixin, RegionMixin, QWidget):
         缓存后避免每帧重建。
         """
         if self._label_fm is None:
-            self._label_fm = QFontMetrics(QFont("Microsoft YaHei UI", 9))
+            self._label_fm = QFontMetrics(QFont(UI_FONT_FAMILY, UI_FONT_SIZE_LABEL))
         return self._label_fm
 
     def _paint_crosshair(self, p):

@@ -5,6 +5,7 @@
 import math
 import sys
 import threading
+from collections import deque
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # ---------------------------------------------------------------------------
@@ -121,12 +122,14 @@ def _load_font(size):
 class UndoStack:
     def __init__(self, maxlen=10):
         self.maxlen = maxlen
-        self._stack = []
+        # deque：挤出最旧快照走 popleft（O(1)）；list.pop(0) 是 O(n)，
+        # 撤销深度大时（50 份）每笔标注都多一次整体搬移。
+        self._stack = deque()
 
     def push(self, item):
         self._stack.append(item)
         if len(self._stack) > self.maxlen:
-            self._stack.pop(0)
+            self._stack.popleft()
 
     def pop(self):
         if self._stack:
@@ -138,7 +141,7 @@ class UndoStack:
 
     def map(self, fn):
         """用 fn 变换每个快照（如选区移动后把快照重新定基到新位置）。"""
-        self._stack = [fn(item) for item in self._stack]
+        self._stack = deque(fn(item) for item in self._stack)
 
     def __len__(self):
         return len(self._stack)
@@ -187,32 +190,11 @@ def mosaic(img, left, top, right, bottom, block=24):
     w, h = region.size
     block = max(1, int(block))
     region = region.filter(ImageFilter.GaussianBlur(radius=1.2))
-    small = region.resize((max(1, w // block), max(1, h // block)), Image.BILINEAR)
-    big = small.resize((w, h), Image.NEAREST)
+    small = region.resize((max(1, w // block), max(1, h // block)),
+                          Image.Resampling.BILINEAR)
+    big = small.resize((w, h), Image.Resampling.NEAREST)
     result.paste(big, (left, top))
     return result
-
-
-def _supersample(img, draw_fn, scale=4):
-    """超采样抗锯齿：在 scale 倍大的透明层上绘制，再缩回原尺寸。
-
-    用 LANCZOS 缩小时做面积平均，边缘产生平滑的半透明过渡（灰度渐晕），
-    消除锯齿。draw_fn(d, s) 接收放大后的 Draw 对象和缩放系数，
-    负责在放大图上完成绘制。返回与原图同尺寸/模式的新图。
-    """
-    layer = Image.new("RGBA", (img.width * scale, img.height * scale), (0, 0, 0, 0))
-    draw_fn(ImageDraw.Draw(layer), scale)
-    small = layer.resize((img.width, img.height), Image.LANCZOS)
-    out = img.convert("RGBA")
-    out.alpha_composite(small)
-    return out.convert(img.mode)
-
-
-def _supersample_inplace(img, draw_fn, scale=4):
-    """超采样绘制后把结果写回 img（保持原对象，供逐段画笔累积）。"""
-    result = _supersample(img, draw_fn, scale)
-    img.paste(result, (0, 0))
-    return img
 
 
 def _supersample_local(img, x0, y0, x1, y1, draw_fn, scale=4):
@@ -228,7 +210,7 @@ def _supersample_local(img, x0, y0, x1, y1, draw_fn, scale=4):
         return img
     layer = Image.new("RGBA", (bw * scale, bh * scale), (0, 0, 0, 0))
     draw_fn(ImageDraw.Draw(layer), scale)
-    small = layer.resize((bw, bh), Image.LANCZOS)
+    small = layer.resize((bw, bh), Image.Resampling.LANCZOS)
     # small 覆盖的图像实际区域（与图像求交）
     cx0, cy0 = max(0, x0), max(0, y0)
     cx1, cy1 = min(W, x1), min(H, y1)
@@ -289,43 +271,75 @@ def arrow_geometry(start, end, width):
     return shaft, head_pts
 
 
+def _local_bbox(points, margin):
+    """点集包围盒外扩 margin，返回 (x0, y0, x1, y1)（图像坐标，int）。"""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return (int(min(xs)) - margin, int(min(ys)) - margin,
+            int(max(xs)) + margin, int(max(ys)) + margin)
+
+
 def draw_arrow(img, start, end, color, width):
     """在 img 上画箭头（锥形杆 + 实心三角箭头头），4x 超采样抗锯齿（原地修改）。
 
     start/end 为 (x, y) 元组，color 为颜色，width 为线宽（杆尾端宽度）。
     几何见 arrow_geometry：杆从尾端向头端线性增宽，线头不会穿出三角。
+    局部超采样（只分配箭头包围盒的 4x 层，见 draw_brush）：大选区画箭头
+    不再需要整图 4x 层（4K 选区 ≈ 500MB）。
     """
     shaft, head_pts = arrow_geometry(start, end, width)
+    margin = max(2 * width, 8)  # ≥ LANCZOS 重采样窗口(3px)，与 draw_brush 一致
+    x0, y0, x1, y1 = _local_bbox(
+        [start, end] if shaft is None else list(shaft) + list(head_pts), margin)
+
     if shaft is None:  # 太短：画一个点
         def draw(d, s):
-            d.line([(start[0] * s, start[1] * s), (end[0] * s, end[1] * s)],
+            d.line([(start[0] - x0) * s, (start[1] - y0) * s,
+                    (end[0] - x0) * s, (end[1] - y0) * s],
                    fill=color, width=max(1, int(width * s)))
-        _supersample_inplace(img, draw)
-        return img
+    else:
+        def draw(d, s):
+            d.polygon([((px - x0) * s, (py - y0) * s) for px, py in shaft], fill=color)
+            d.polygon([((px - x0) * s, (py - y0) * s) for px, py in head_pts], fill=color)
 
-    def draw(d, s):
-        d.polygon([(x * s, y * s) for x, y in shaft], fill=color)
-        d.polygon([(x * s, y * s) for x, y in head_pts], fill=color)
-
-    _supersample_inplace(img, draw)
+    _supersample_local(img, x0, y0, x1, y1, draw)
     return img
 
 
 def draw_rect(img, box, color, width):
-    """在 img 上画 outline 矩形（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。"""
-    def draw(d, s):
-        d.rectangle([v * s for v in box], outline=color, width=max(1, int(width * s)))
+    """在 img 上画 outline 矩形（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。
 
-    _supersample_inplace(img, draw)
+    局部超采样：只分配矩形边框包围盒的 4x 层（大选区画矩形不再需要
+    整图 4x 层，见 draw_arrow 注释）。
+    """
+    margin = max(2 * width, 8)
+    x0, y0, x1, y1 = _local_bbox(
+        [(box[0], box[1]), (box[2], box[3])], margin)
+
+    def draw(d, s):
+        d.rectangle([(box[0] - x0) * s, (box[1] - y0) * s,
+                     (box[2] - x0) * s, (box[3] - y0) * s],
+                    outline=color, width=max(1, int(width * s)))
+
+    _supersample_local(img, x0, y0, x1, y1, draw)
     return img
 
 
 def draw_ellipse(img, box, color, width):
-    """在 img 上画 outline 椭圆（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。"""
-    def draw(d, s):
-        d.ellipse([v * s for v in box], outline=color, width=max(1, int(width * s)))
+    """在 img 上画 outline 椭圆（4x 超采样抗锯齿，原地修改）。box 已归一化 (x0, y0, x1, y1)。
 
-    _supersample_inplace(img, draw)
+    局部超采样：只分配椭圆包围盒的 4x 层（见 draw_arrow 注释）。
+    """
+    margin = max(2 * width, 8)
+    x0, y0, x1, y1 = _local_bbox(
+        [(box[0], box[1]), (box[2], box[3])], margin)
+
+    def draw(d, s):
+        d.ellipse([(box[0] - x0) * s, (box[1] - y0) * s,
+                   (box[2] - x0) * s, (box[3] - y0) * s],
+                  outline=color, width=max(1, int(width * s)))
+
+    _supersample_local(img, x0, y0, x1, y1, draw)
     return img
 
 

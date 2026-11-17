@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from .theme import (
     PALETTE, TB_ACTIVE, TB_BG, TB_CANCEL_FG, TB_CONFIRM_FG,
     TB_DISABLED, TB_FG, TB_HOVER, TB_SEP,
+    UI_FONT_FAMILY, UI_FONT_SIZE_TOOLBAR,
 )
 from .tb_icons import (
     TB_ICON_SIZE, TOOL_ICON_FNS, _tb_icon,
@@ -39,7 +40,7 @@ class ToolbarMixin:
         # Esc/Enter/Ctrl+Z（见 _Toolbar.keyPressEvent）。
         self.tb_win = _Toolbar(self)
         self.tb_win.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.tb_win.setFont(QFont("Microsoft YaHei UI", 10))
+        self.tb_win.setFont(QFont(UI_FONT_FAMILY, UI_FONT_SIZE_TOOLBAR))
         self.tb_win.setStyleSheet(
             f"QWidget {{ background: {TB_BG}; }}"
             f"QToolButton {{ background: transparent; border: none; "

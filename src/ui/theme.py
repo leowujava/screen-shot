@@ -40,3 +40,8 @@ MASK_ALPHA = 128
 # 无定格截图时的窗口透明度（半透明黑底透出桌面暗化效果）
 DIM_WINDOW_OPACITY = 0.5
 FULL_WINDOW_OPACITY = 1.0
+
+# 界面字体（中文系统优先微软雅黑；缺失时 Qt 走系统回退链）
+UI_FONT_FAMILY = "Microsoft YaHei UI"
+UI_FONT_SIZE_TOOLBAR = 10   # 工具条
+UI_FONT_SIZE_LABEL = 9      # 十字准星尺寸标签

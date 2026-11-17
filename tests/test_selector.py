@@ -69,7 +69,7 @@ def _rgb(img, x, y):
 
 def _close(a, b, tol=40):
     """颜色分量接近判定（抗锯齿后边缘存在灰度过渡，允许容差）。"""
-    return all(abs(x - y) <= tol for x, y in zip(a, b))
+    return all(abs(x - y) <= tol for x, y in zip(a, b, strict=True))
 
 
 # =================================================================== #
@@ -1302,7 +1302,7 @@ def test_hit_test_still_works_before_annotation(sel_env):
     sel._region = (10, 10, 90, 90)
     sel._init_region_img()
     # 未画标注，undo 栈为空
-    assert sel.undo._stack == []
+    assert len(sel.undo) == 0
     assert sel._hit_test(10, 10) == "nw"
     assert sel._hit_test(90, 10) == "ne"
     assert sel._hit_test(10, 90) == "sw"

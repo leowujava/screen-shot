@@ -1,6 +1,5 @@
 """验证 process_region_selection 确认后只复制到剪贴板，不自动保存、不打开 Editor。"""
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from PIL import Image
 
 

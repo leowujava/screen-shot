@@ -2,3 +2,24 @@
 # src 即源码包：从项目根导入
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+# build/dist 是 PyInstaller 产物，不参与检查
+extend-exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+# E/W：pycodestyle 错误与警告；F：pyflakes（未用导入/未定义名等真问题）；
+# B：bugbear（常见 bug 模式）。暂不启用 I（import 排序）：现有代码
+# 按"标准库/第三方/本地"分组但组内顺序不严格，全量排序会产生大 diff。
+select = ["E", "W", "F", "B"]
+ignore = [
+    "E501",  # 行过长：中文注释行普遍较长，不强制
+    "E741",  # 变量名 l：l/t/r/b = left/top/right/bottom 是选区几何的既有约定
+]
+
+[tool.ruff.lint.per-file-ignores]
+# selector.py 是门面模块：重导出子模块名字保持 `from src.ui import selector`
+# 的既有接口（测试/手动脚本直接引用，见模块 docstring），F401 属预期行为
+"src/ui/selector.py" = ["F401"]

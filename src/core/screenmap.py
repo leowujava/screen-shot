@@ -149,7 +149,7 @@ def _near(a, b, tolerance=2):
 
 
 def _same_rect(a, b, tolerance=2):
-    return all(_near(x, y, tolerance) for x, y in zip(a, b))
+    return all(_near(x, y, tolerance) for x, y in zip(a, b, strict=True))
 
 
 def _match_monitors(screens, monitors):
@@ -186,7 +186,7 @@ def _match_monitors_by_size(screens, monitors):
     remaining = list(enumerate(monitors))
 
     # 第一轮：尺寸唯一匹配
-    for index, ((gx, gy, gw, gh), dpr) in enumerate(screens):
+    for index, ((_, _, gw, gh), dpr) in enumerate(screens):
         candidates = [
             (j, rect) for j, rect in remaining
             if _near(rect[2] - rect[0], gw * dpr)
@@ -202,7 +202,7 @@ def _match_monitors_by_size(screens, monitors):
     if len(pending) == len(remaining):
         pending.sort(key=lambda i: (screens[i][0][1], screens[i][0][0]))
         remaining.sort(key=lambda item: (item[1][1], item[1][0]))
-        for index, (_j, rect) in zip(pending, remaining):
+        for index, (_j, rect) in zip(pending, remaining, strict=True):
             ((gx, gy, gw, gh), dpr) = screens[index]
             if not (_near(rect[2] - rect[0], gw * dpr)
                     and _near(rect[3] - rect[1], gh * dpr)):
@@ -253,7 +253,7 @@ def build_mappings(logical_w, logical_h, physical_w, physical_h):
                 if matched is not None:
                     entries = []
                     for ((gx, gy, gw, gh), _dpr), (pl, pt, pr, pb) in zip(
-                            screens, matched):
+                            screens, matched, strict=True):
                         if gw <= 0 or gh <= 0:
                             entries = None
                             break

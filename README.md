@@ -26,6 +26,7 @@ screen-shot/
 ├── src/                    # 源码包
 │   ├── app.py              # 主入口：托盘 / 全局热键 / Qt 事件循环 / 单实例
 │   ├── __main__.py         # 支持 python -m src
+│   ├── version.py          # 版本号（唯一事实来源）
 │   ├── core/               # 核心逻辑（无 Qt 依赖）
 │   │   ├── capture.py      # 截屏、保存、剪贴板
 │   │   ├── config.py       # 用户配置读取
@@ -45,7 +46,8 @@ screen-shot/
 ├── tests/                  # pytest 测试与手动脚本
 ├── docs/                   # 设计与计划文档
 ├── requirements.txt        # 依赖清单
-├── pyproject.toml          # pytest 配置（pythonpath 指向项目根）
+├── pyproject.toml          # pytest / ruff 配置（pythonpath 指向项目根）
+├── version_info.txt        # exe 的 Windows 版本资源（与 src/version.py 同步）
 └── screen-shot.spec        # PyInstaller 打包脚本
 ```
 
@@ -171,11 +173,12 @@ screen-shot/
 ## 自动发布（GitHub Actions）
 
 工作流：`.github/workflows/build-release.yml`（Windows runner，Python 3.14 + PyInstaller）。
+构建前先跑 ruff lint（配置见 `pyproject.toml`）与 pytest。
 
 | 触发 | 结果 |
 |---|---|
-| 推送到 `master` / `main` | 跑测试 → 打包 → 更新滚动预发布 `latest` |
-| 推送 `v*` 标签（如 `v1.0.0`） | 跑测试 → 打包 → 发布正式 Release（自动生成 release notes） |
+| 推送到 `master` / `main` | lint + 测试 → 打包 → 更新滚动预发布 `latest` |
+| 推送 `v*` 标签（如 `v1.0.0`） | lint + 测试 → 打包 → 发布正式 Release（自动生成 release notes） |
 | 手动触发（Actions → Build & Release → Run workflow） | 同分支推送，更新 `latest` |
 
 每次构建都会生成两个附件：`screen-shot.exe` 与 `screen-shot.exe.sha256`，Actions 页面同时保留 30 天的构建产物。
@@ -183,8 +186,11 @@ screen-shot/
 发布正式版本：
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# 先更新版本号（两处必须一致，tests/test_version.py 守护）
+#   src/version.py        __version__ = "1.1.0"
+#   version_info.txt      FileVersion / ProductVersion / filevers
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 前提：仓库 `Settings → Actions → General → Workflow permissions` 需选择 **Read and write permissions**，否则工作流无法创建 Release。

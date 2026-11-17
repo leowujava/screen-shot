@@ -1,4 +1,3 @@
-import ctypes
 import os
 from datetime import datetime
 from PIL import Image
@@ -110,7 +109,7 @@ def _build_dib(img):
     w, h = img.size
 
     # C 级整块翻转（bottom-up），替代原 Python 逐行切片循环
-    pixels_bu = img.transpose(Image.FLIP_TOP_BOTTOM).tobytes("raw", "BGRX")
+    pixels_bu = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).tobytes("raw", "BGRX")
 
     # BITMAPINFOHEADER（40 字节）
     header = struct.pack(

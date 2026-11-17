@@ -224,6 +224,7 @@ def _paint_icon_color(p, s, c):
     for (dx, dy), col in zip(
         ((s * 0.30, s * 0.36), (s * 0.50, s * 0.27), (s * 0.70, s * 0.36)),
         (QColor(pc) for pc in PALETTE[:3]),
+        strict=True,
     ):
         p.setBrush(col)
         p.drawEllipse(QPointF(dx, dy), dot_r, dot_r)

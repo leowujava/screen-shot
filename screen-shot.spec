@@ -42,6 +42,9 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    # Windows 版本资源（右键 exe 属性可见版本号）；与 src/version.py 同步
+    # （tests/test_version.py 守护）
+    version='version_info.txt',
     codesign_identity=None,
     entitlements_file=None,
 )
